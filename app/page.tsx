@@ -23,6 +23,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceDot,
   ReferenceLine,
   XAxis,
   YAxis,
@@ -1226,12 +1227,6 @@ function FrontierPanel({
                 x={plateau.day}
                 stroke="#64748b"
                 strokeDasharray="3 4"
-                label={{
-                  value: `平台约 ${number(plateau.day)} 天`,
-                  position: 'insideTopLeft',
-                  fill: '#475569',
-                  fontSize: 12,
-                }}
               />
             ) : null}
             {targetYtm !== null &&
@@ -1263,6 +1258,24 @@ function FrontierPanel({
                 strokeWidth: 3,
               }}
             />
+            {hasPlateau ? (
+              <ReferenceDot
+                x={plateau.day}
+                y={plateau.ytm}
+                r={5}
+                fill="#ffffff"
+                stroke="#0d9488"
+                strokeWidth={3}
+                label={{
+                  value: `(${number(plateau.day)} 天，${percent(plateau.ytm, 3)}) · 最大 YTM`,
+                  position: 'bottom',
+                  offset: 12,
+                  fill: '#0f766e',
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              />
+            ) : null}
           </LineChart>
         </ChartContainer>
         <p className="mt-1 text-center text-xs text-slate-400">
@@ -1282,7 +1295,7 @@ function FrontierPanel({
         </p>
         <div className="mt-3 rounded-xl border border-yellow-200 bg-yellow-50 p-3">
           <p className="text-sm font-semibold text-slate-900">
-            {hasPlateau ? '为什么之后不再增加？' : '尚未进入收益平台'}
+            {hasPlateau ? '为什么之后不再增加？' : '尚未达到最大 YTM'}
           </p>
           <p className="mt-1 text-sm leading-6 text-slate-700">
             {hasPlateau ? (
@@ -1291,13 +1304,14 @@ function FrontierPanel({
                 {label} 已固定在{' '}
                 {number(mode === 'wam' ? plateau.wam : plateau.wal)}{' '}
                 天。继续提高 {label}{' '}
-                上限只会增加未使用的期限空间，并不会找到更高收益的合规配置。平台配置触及的其他边界包括：
+                上限只会增加未使用的期限空间，并不会找到更高收益的合规配置。最大
+                YTM 配置触及的其他边界包括：
                 {plateauReasonText}。
               </>
             ) : (
               <>
-                在当前展示区间内，放宽 {label}{' '}
-                仍能提高最高收益，尚未出现平台；曲线止于 SFC {label} ≤{' '}
+                在当前展示区间内，放宽 {label} 仍能提高最高收益，尚未达到最大
+                YTM；曲线止于 SFC {label} ≤{' '}
                 {mode === 'wam' ? SFC_MAX_WAM_DAYS : SFC_MAX_WAL_DAYS}{' '}
                 天的硬上限。
               </>
@@ -1318,11 +1332,11 @@ function FrontierPanel({
             </dd>
           </div>
           <div className="flex justify-between gap-3">
-            <dt className="text-slate-500">收益平台</dt>
+            <dt className="text-slate-500">最大 YTM 起点</dt>
             <dd className="font-medium">
               {hasPlateau
                 ? `数值精度内约 ${number(plateau.day)} 天起`
-                : '区间内未出现'}
+                : '展示区间内未达到'}
             </dd>
           </div>
           <div className="flex justify-between gap-3">
