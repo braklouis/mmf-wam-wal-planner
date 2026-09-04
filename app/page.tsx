@@ -181,7 +181,7 @@ const initialBanks: Bank[] = [
   {
     id: 'today-bank-c',
     templateId: 'bank-c',
-    name: '银行 C',
+    name: '金融机构 C',
     currentExposure: 5,
     limitPct: 10,
   },
@@ -190,7 +190,7 @@ const initialBanks: Bank[] = [
 const initialBankLibrary: BankTemplate[] = [
   { id: 'bank-a', name: '银行 A', defaultLimitPct: 25 },
   { id: 'bank-b', name: '银行 B', defaultLimitPct: 25 },
-  { id: 'bank-c', name: '银行 C', defaultLimitPct: 10 },
+  { id: 'bank-c', name: '金融机构 C', defaultLimitPct: 10 },
   { id: 'bank-d', name: '银行 D', defaultLimitPct: 10 },
   { id: 'bank-e', name: '银行 E', defaultLimitPct: 10 },
 ];
@@ -227,7 +227,7 @@ const initialQuotes: Quote[] = [
   },
   {
     id: 'quote-c-7',
-    name: 'C行 7天定存',
+    name: 'C机构 7天票据',
     bankId: 'today-bank-c',
     wamDays: null,
     walDays: 7,
@@ -942,7 +942,7 @@ function NumberField({
         isRed
           ? 'border-red-300 bg-red-50'
           : isYellow
-            ? 'border-yellow-300 bg-yellow-50'
+            ? 'border-yellow-300 bg-yellow-100/80'
             : 'border-transparent'
       }`}
     >
@@ -1090,7 +1090,7 @@ function FrontierPanel({
           disabled={disabled || targetYtm === null}
           className="bg-teal-600 text-white hover:bg-teal-700"
         >
-          反推配置 <ArrowRight />
+          反推期限与配置比例 <ArrowRight />
         </Button>
       </div>
       <p className="mt-2 text-xs leading-5 text-slate-500">
@@ -1925,7 +1925,7 @@ export default function Home() {
                       newBankLimitError
                         ? 'border-red-300 bg-red-50'
                         : newBankLimitNotice
-                          ? 'border-yellow-300 bg-yellow-50'
+                          ? 'border-yellow-300 bg-yellow-100/80'
                           : 'border-transparent'
                     }`}
                   >
@@ -2113,7 +2113,7 @@ export default function Home() {
                           concentrationError
                             ? 'bg-red-50/90'
                             : concentrationNotice
-                              ? 'bg-yellow-50/90'
+                              ? 'bg-yellow-100/80'
                               : ''
                         }`}
                       >
@@ -2421,7 +2421,7 @@ export default function Home() {
                 </p>
               </div>
               {hasRegulatoryLimitViolation ? (
-                <Badge variant="destructive">监管上限超出</Badge>
+                <Badge variant="destructive">监管/输入需修正</Badge>
               ) : dirty ? (
                 <Badge className="bg-amber-100 text-amber-800">
                   待重新计算
