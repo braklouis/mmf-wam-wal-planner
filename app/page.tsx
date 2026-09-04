@@ -52,12 +52,15 @@ import {
   TableRow,
 } from '@/components/ui/table';
 
+type TradeMode = 'subscription' | 'redemption';
+
 type Portfolio = {
+  tradeMode: TradeMode;
   aum: number;
   ytm: number;
   wam: number;
   wal: number;
-  cash: number;
+  transactionAmount: number;
   maxWam: number | null;
   maxWal: number | null;
 };
@@ -88,31 +91,50 @@ type Quote = {
   cap: number;
 };
 
-type SuccessResult = {
+type BankOutcome = Bank & {
+  transactionChange: number;
+  finalExposure: number;
+  finalPct: number;
+  remaining: number;
+};
+
+type BaseSuccessResult = {
   ok: true;
+  tradeMode: TradeMode;
   postAum: number;
-  newMoneyAmount: number;
+  transactionAmount: number;
   appliedMaxWam: number;
   appliedMaxWal: number;
   postYtm: number;
   postWam: number;
   postWal: number;
-  newMoneyYield: number;
-  unallocated: number;
-  allocations: Array<Quote & { amount: number }>;
-  banks: Array<
-    Bank & {
-      added: number;
-      finalExposure: number;
-      finalPct: number;
-      remaining: number;
-    }
-  >;
+  banks: BankOutcome[];
 };
 
-type ModelResult =
-  | SuccessResult
-  | { ok: false; messages: string[]; postAum: number };
+type SubscriptionSuccessResult = BaseSuccessResult & {
+  tradeMode: 'subscription';
+  allocationYield: number;
+  unallocated: number;
+  allocations: Array<Quote & { amount: number }>;
+};
+
+type RedemptionSuccessResult = BaseSuccessResult & {
+  tradeMode: 'redemption';
+  redemptionRatio: number;
+};
+
+type SuccessResult = SubscriptionSuccessResult | RedemptionSuccessResult;
+
+type FailureResult = {
+  ok: false;
+  tradeMode: TradeMode;
+  messages: string[];
+  postAum: number;
+};
+
+type ModelResult = SuccessResult | FailureResult;
+
+type SubscriptionModelResult = SubscriptionSuccessResult | FailureResult;
 
 type FrontierMode = 'wam' | 'wal';
 
@@ -130,7 +152,7 @@ type ReverseYtmResult =
   | {
       ok: true;
       limit: number;
-      result: SuccessResult;
+      result: SubscriptionSuccessResult;
     }
   | {
       ok: false;
@@ -155,11 +177,12 @@ type WebModelContext = {
 };
 
 const initialPortfolio: Portfolio = {
+  tradeMode: 'subscription',
   aum: 100,
   ytm: 2.5,
   wam: 30,
   wal: 50,
-  cash: 20,
+  transactionAmount: 20,
   maxWam: 32,
   maxWal: 60,
 };
@@ -271,8 +294,12 @@ function currentTermComplianceWarning(
   value: number,
   metric: 'WAM' | 'WAL',
   maximum: number,
+  tradeMode: TradeMode,
 ) {
   if (!Number.isFinite(value) || value <= maximum) return null;
+  if (tradeMode === 'redemption') {
+    return `当前组合 ${metric} 已超过 SFC ${maximum} 天上限；同比例赎回不会改变该指标。`;
+  }
   return `当前组合 ${metric} 已超过 SFC ${maximum} 天上限；该事实仍可录入，以测算回到合规区间的方案。`;
 }
 
@@ -298,6 +325,50 @@ function bankConcentrationNotice(value: number) {
 
 function quoteWamDays(quote: Quote) {
   return quote.wamDays ?? quote.walDays;
+}
+
+function postAumOf(portfolio: Portfolio) {
+  const direction = portfolio.tradeMode === 'subscription' ? 1 : -1;
+  return portfolio.aum + direction * portfolio.transactionAmount;
+}
+
+function postTradeExistingExposure(
+  portfolio: Portfolio,
+  currentExposure: number,
+) {
+  if (portfolio.tradeMode === 'subscription') return currentExposure;
+  const postAum = postAumOf(portfolio);
+  if (
+    !Number.isFinite(portfolio.aum) ||
+    portfolio.aum <= 0 ||
+    !Number.isFinite(postAum) ||
+    postAum <= 0
+  ) {
+    return Number.NaN;
+  }
+  return currentExposure * (postAum / portfolio.aum);
+}
+
+function institutionExposureTotalError(portfolio: Portfolio, banks: Bank[]) {
+  if (
+    !Number.isFinite(portfolio.aum) ||
+    portfolio.aum < 0 ||
+    banks.some(
+      (bank) =>
+        !Number.isFinite(bank.currentExposure) || bank.currentExposure < 0,
+    )
+  ) {
+    return null;
+  }
+
+  const totalExposure = banks.reduce(
+    (sum, bank) => sum + bank.currentExposure,
+    0,
+  );
+  if (totalExposure > portfolio.aum + EPSILON) {
+    return `已录入机构的当前持仓合计（${number(totalExposure)}）不得超过当前 AUM（${number(portfolio.aum)}）。`;
+  }
+  return null;
 }
 
 // Primal simplex for max c'x subject to Ax <= b, x >= 0.
@@ -370,18 +441,21 @@ function simplex(
   return null;
 }
 
-function optimise(
+function optimiseSubscription(
   portfolio: Portfolio,
   banks: Bank[],
   quotes: Quote[],
-): ModelResult {
+): SubscriptionModelResult {
   const errors: string[] = [];
-  const postAum = portfolio.aum + portfolio.cash;
+  const postAum = portfolio.aum + portfolio.transactionAmount;
 
   if (!Number.isFinite(portfolio.aum) || portfolio.aum < 0) {
     errors.push('当前 AUM 必须为非负数字。');
   }
-  if (!Number.isFinite(portfolio.cash) || portfolio.cash < 0) {
+  if (
+    !Number.isFinite(portfolio.transactionAmount) ||
+    portfolio.transactionAmount < 0
+  ) {
     errors.push('可配置金额必须为非负数字。');
   }
   if (postAum <= 0) errors.push('交易后 AUM 必须大于 0。');
@@ -423,6 +497,8 @@ function optimise(
       );
     }
   });
+  const exposureTotalError = institutionExposureTotalError(portfolio, banks);
+  if (exposureTotalError) errors.push(exposureTotalError);
 
   quotes.forEach((quote) => {
     if (!quote.name.trim()) errors.push('产品名称不能为空。');
@@ -469,12 +545,19 @@ function optimise(
   if (walBudget < -EPSILON) {
     errors.push('即使新增资金全部留作现金，也无法满足 WAL 上限。');
   }
-  if (errors.length) return { ok: false, messages: errors, postAum };
+  if (errors.length) {
+    return {
+      ok: false,
+      tradeMode: 'subscription',
+      messages: errors,
+      postAum,
+    };
+  }
 
   const matrix: number[][] = [];
   const limits: number[] = [];
   matrix.push(quotes.map(() => 1));
-  limits.push(portfolio.cash);
+  limits.push(portfolio.transactionAmount);
 
   matrix.push(quotes.map(quoteWamDays));
   limits.push(Math.max(0, wamBudget));
@@ -488,7 +571,7 @@ function optimise(
   });
   quotes.forEach((quote, quoteIndex) => {
     matrix.push(quotes.map((_, index) => (index === quoteIndex ? 1 : 0)));
-    limits.push(Math.min(portfolio.cash, quote.cap));
+    limits.push(Math.min(portfolio.transactionAmount, quote.cap));
   });
 
   const raw = simplex(
@@ -499,6 +582,7 @@ function optimise(
   if (!raw) {
     return {
       ok: false,
+      tradeMode: 'subscription',
       messages: ['求解过程没有收敛，请检查输入数据。'],
       postAum,
     };
@@ -523,29 +607,33 @@ function optimise(
 
   return {
     ok: true,
+    tradeMode: 'subscription',
     postAum,
-    newMoneyAmount: portfolio.cash,
+    transactionAmount: portfolio.transactionAmount,
     appliedMaxWam: effectiveMaxWam,
     appliedMaxWal: effectiveMaxWal,
     postYtm: (portfolio.aum * portfolio.ytm + interest) / postAum,
     postWam: (portfolio.aum * portfolio.wam + wamDuration) / postAum,
     postWal: (portfolio.aum * portfolio.wal + walDuration) / postAum,
-    newMoneyYield: portfolio.cash > 0 ? interest / portfolio.cash : 0,
-    unallocated: Math.max(0, portfolio.cash - invested),
+    allocationYield:
+      portfolio.transactionAmount > 0
+        ? interest / portfolio.transactionAmount
+        : 0,
+    unallocated: Math.max(0, portfolio.transactionAmount - invested),
     allocations: quotes
       .map((quote, index) => ({ ...quote, amount: allocation[index] }))
       .filter((quote) => quote.amount > EPSILON),
     banks: banks.map((bank) => {
-      const added = allocation.reduce(
+      const transactionChange = allocation.reduce(
         (sum, value, index) =>
           sum + (quotes[index].bankId === bank.id ? value : 0),
         0,
       );
-      const finalExposure = bank.currentExposure + added;
+      const finalExposure = bank.currentExposure + transactionChange;
       const finalCap = (postAum * bank.limitPct) / 100;
       return {
         ...bank,
-        added,
+        transactionChange,
         finalExposure,
         finalPct: (finalExposure / postAum) * 100,
         remaining: Math.max(0, finalCap - finalExposure),
@@ -554,8 +642,151 @@ function optimise(
   };
 }
 
+function calculateProRataRedemption(
+  portfolio: Portfolio,
+  banks: Bank[],
+): ModelResult {
+  const errors: string[] = [];
+  const postAum = postAumOf(portfolio);
+
+  if (!Number.isFinite(portfolio.aum) || portfolio.aum <= 0) {
+    errors.push('净赎回时，当前 AUM 必须为大于 0 的数字。');
+  }
+  if (
+    !Number.isFinite(portfolio.transactionAmount) ||
+    portfolio.transactionAmount < 0
+  ) {
+    errors.push('净赎回金额必须为非负数字。');
+  } else if (
+    Number.isFinite(portfolio.aum) &&
+    portfolio.transactionAmount >= portfolio.aum
+  ) {
+    errors.push('净赎回金额必须小于当前 AUM；全部赎回后无法计算组合指标。');
+  }
+  if (!Number.isFinite(postAum) || postAum <= 0) {
+    errors.push('交易后 AUM 必须大于 0。');
+  }
+  if (!Number.isFinite(portfolio.ytm)) {
+    errors.push('当前 YTM 必须是有效数字。');
+  }
+
+  const currentWamError = termValueError(portfolio.wam, 'WAM');
+  const currentWalError = termValueError(portfolio.wal, 'WAL');
+  const maxWamError = regulatoryTermError(
+    portfolio.maxWam,
+    'WAM',
+    SFC_MAX_WAM_DAYS,
+    true,
+  );
+  const maxWalError = regulatoryTermError(
+    portfolio.maxWal,
+    'WAL',
+    SFC_MAX_WAL_DAYS,
+    true,
+  );
+  if (currentWamError) errors.push(`当前 ${currentWamError}`);
+  if (currentWalError) errors.push(`当前 ${currentWalError}`);
+  if (maxWamError) errors.push(`上限输入错误：${maxWamError}`);
+  if (maxWalError) errors.push(`上限输入错误：${maxWalError}`);
+
+  const effectiveMaxWam = Math.min(
+    portfolio.maxWam ?? SFC_MAX_WAM_DAYS,
+    SFC_MAX_WAM_DAYS,
+  );
+  const effectiveMaxWal = Math.min(
+    portfolio.maxWal ?? SFC_MAX_WAL_DAYS,
+    SFC_MAX_WAL_DAYS,
+  );
+  if (
+    !currentWamError &&
+    !maxWamError &&
+    portfolio.wam > effectiveMaxWam + EPSILON
+  ) {
+    errors.push(
+      `按比例赎回不会改变 WAM；当前 ${number(portfolio.wam)} 天仍超过 ${number(effectiveMaxWam)} 天上限。`,
+    );
+  }
+  if (
+    !currentWalError &&
+    !maxWalError &&
+    portfolio.wal > effectiveMaxWal + EPSILON
+  ) {
+    errors.push(
+      `按比例赎回不会改变 WAL；当前 ${number(portfolio.wal)} 天仍超过 ${number(effectiveMaxWal)} 天上限。`,
+    );
+  }
+
+  banks.forEach((bank) => {
+    if (!bank.name.trim()) errors.push('机构名称不能为空。');
+    if (!Number.isFinite(bank.currentExposure) || bank.currentExposure < 0) {
+      errors.push(`${bank.name || '某机构'}的当前持有金额无效。`);
+    }
+    const concentrationError = bankConcentrationError(bank.limitPct);
+    if (concentrationError) {
+      errors.push(`${bank.name || '某机构'}：${concentrationError}`);
+    }
+    if (
+      Number.isFinite(portfolio.aum) &&
+      portfolio.aum > 0 &&
+      Number.isFinite(bank.currentExposure) &&
+      !concentrationError &&
+      bank.currentExposure > (portfolio.aum * bank.limitPct) / 100 + EPSILON
+    ) {
+      errors.push(
+        `${bank.name || '某机构'}当前占比超过适用上限；同比例赎回后占比不变，无法修复该超限。`,
+      );
+    }
+  });
+  const exposureTotalError = institutionExposureTotalError(portfolio, banks);
+  if (exposureTotalError) errors.push(exposureTotalError);
+
+  if (errors.length) {
+    return {
+      ok: false,
+      tradeMode: 'redemption',
+      messages: [...new Set(errors)],
+      postAum,
+    };
+  }
+
+  const remainingFactor = postAum / portfolio.aum;
+  return {
+    ok: true,
+    tradeMode: 'redemption',
+    postAum,
+    transactionAmount: portfolio.transactionAmount,
+    redemptionRatio: portfolio.transactionAmount / portfolio.aum,
+    appliedMaxWam: effectiveMaxWam,
+    appliedMaxWal: effectiveMaxWal,
+    postYtm: portfolio.ytm,
+    postWam: portfolio.wam,
+    postWal: portfolio.wal,
+    banks: banks.map((bank) => {
+      const finalExposure = bank.currentExposure * remainingFactor;
+      const finalCap = (postAum * bank.limitPct) / 100;
+      return {
+        ...bank,
+        transactionChange: finalExposure - bank.currentExposure,
+        finalExposure,
+        finalPct: (finalExposure / postAum) * 100,
+        remaining: Math.max(0, finalCap - finalExposure),
+      };
+    }),
+  };
+}
+
+function calculatePlan(
+  portfolio: Portfolio,
+  banks: Bank[],
+  quotes: Quote[],
+): ModelResult {
+  return portfolio.tradeMode === 'redemption'
+    ? calculateProRataRedemption(portfolio, banks)
+    : optimiseSubscription(portfolio, banks, quotes);
+}
+
 function describeBindingConstraints(
-  outcome: SuccessResult,
+  outcome: SubscriptionSuccessResult,
   portfolio: Portfolio,
   quotes: Quote[],
 ) {
@@ -593,7 +824,7 @@ function describeBindingConstraints(
 
 function makeFrontierPoint(
   day: number,
-  outcome: SuccessResult,
+  outcome: SubscriptionSuccessResult,
   portfolio: Portfolio,
   quotes: Quote[],
   isPlateauStart = false,
@@ -615,7 +846,7 @@ function buildFrontier(
   banks: Bank[],
   quotes: Quote[],
 ): FrontierPoint[] {
-  const postAum = portfolio.aum + portfolio.cash;
+  const postAum = portfolio.aum + portfolio.transactionAmount;
   if (postAum <= 0) return [];
 
   const minimum =
@@ -634,7 +865,7 @@ function buildFrontier(
     ...portfolio,
     ...(mode === 'wam' ? { maxWam: minimum } : { maxWal: minimum }),
   };
-  const minimumOutcome = optimise(minimumCandidate, banks, quotes);
+  const minimumOutcome = optimiseSubscription(minimumCandidate, banks, quotes);
   if (minimumOutcome.ok) {
     points.push(
       makeFrontierPoint(minimum, minimumOutcome, minimumCandidate, quotes),
@@ -647,7 +878,7 @@ function buildFrontier(
       ...portfolio,
       ...(mode === 'wam' ? { maxWam: day } : { maxWal: day }),
     };
-    const outcome = optimise(candidate, banks, quotes);
+    const outcome = optimiseSubscription(candidate, banks, quotes);
     if (outcome.ok) {
       points.push(makeFrontierPoint(day, outcome, candidate, quotes));
     }
@@ -664,7 +895,7 @@ function buildFrontier(
       ...portfolio,
       ...(mode === 'wam' ? { maxWam: middle } : { maxWal: middle }),
     };
-    const outcome = optimise(candidate, banks, quotes);
+    const outcome = optimiseSubscription(candidate, banks, quotes);
     if (outcome.ok && last.ytm - outcome.postYtm <= 1e-7) {
       highLimit = middle;
     } else {
@@ -676,7 +907,7 @@ function buildFrontier(
     ...portfolio,
     ...(mode === 'wam' ? { maxWam: highLimit } : { maxWal: highLimit }),
   };
-  const plateauOutcome = optimise(plateauCandidate, banks, quotes);
+  const plateauOutcome = optimiseSubscription(plateauCandidate, banks, quotes);
   if (plateauOutcome.ok) {
     const plateauPoint = makeFrontierPoint(
       highLimit,
@@ -719,7 +950,7 @@ function solveTargetYtm(
     return { ok: false, message: '目标 YTM 必须是有效数字。' };
   }
 
-  const upper = optimise(withLimit(ceiling), banks, quotes);
+  const upper = optimiseSubscription(withLimit(ceiling), banks, quotes);
   if (!upper.ok) {
     return {
       ok: false,
@@ -740,7 +971,7 @@ function solveTargetYtm(
     0,
     (portfolio.aum * currentDuration) / upper.postAum,
   );
-  const lower = optimise(withLimit(lowerBound), banks, quotes);
+  const lower = optimiseSubscription(withLimit(lowerBound), banks, quotes);
   if (lower.ok && lower.postYtm + yieldTolerance >= targetYtm) {
     return { ok: true, limit: lowerBound, result: lower };
   }
@@ -749,7 +980,7 @@ function solveTargetYtm(
   let highLimit = ceiling;
   for (let iteration = 0; iteration < 52; iteration += 1) {
     const middle = (lowLimit + highLimit) / 2;
-    const outcome = optimise(withLimit(middle), banks, quotes);
+    const outcome = optimiseSubscription(withLimit(middle), banks, quotes);
     if (outcome.ok && outcome.postYtm + yieldTolerance >= targetYtm) {
       highLimit = middle;
     } else {
@@ -761,13 +992,21 @@ function solveTargetYtm(
     ceiling,
     Math.ceil((highLimit - EPSILON) * 100) / 100,
   );
-  let displayedResult = optimise(withLimit(displayedLimit), banks, quotes);
+  let displayedResult = optimiseSubscription(
+    withLimit(displayedLimit),
+    banks,
+    quotes,
+  );
   if (
     !displayedResult.ok ||
     displayedResult.postYtm + yieldTolerance < targetYtm
   ) {
     displayedLimit = Math.min(ceiling, displayedLimit + 0.01);
-    displayedResult = optimise(withLimit(displayedLimit), banks, quotes);
+    displayedResult = optimiseSubscription(
+      withLimit(displayedLimit),
+      banks,
+      quotes,
+    );
   }
   if (
     !displayedResult.ok ||
@@ -1373,7 +1612,7 @@ export default function Home() {
   const [newBankLimitPct, setNewBankLimitPct] = useState(10);
   const [amountUnit, setAmountUnit] = useState<AmountUnit>('百万元');
   const [result, setResult] = useState<ModelResult>(() =>
-    optimise(initialPortfolio, initialBanks, initialQuotes),
+    calculatePlan(initialPortfolio, initialBanks, initialQuotes),
   );
   const [dirty, setDirty] = useState(false);
   const [frontierMode, setFrontierMode] = useState<FrontierMode>('wam');
@@ -1428,7 +1667,7 @@ export default function Home() {
         name: 'calculate_current_mmf_allocation',
         title: '计算当前 MMF 配置',
         description:
-          '使用页面当前填写的组合、机构敞口和报价，计算并显示最高收益配置。',
+          '使用页面当前填写的组合、机构敞口、交易方向和报价，计算申购配置或同比例赎回影响。',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -1440,7 +1679,7 @@ export default function Home() {
         },
         execute() {
           const current = stateRef.current;
-          const nextResult = optimise(
+          const nextResult = calculatePlan(
             current.portfolio,
             current.banks,
             current.quotes,
@@ -1448,10 +1687,36 @@ export default function Home() {
           setResult(nextResult);
           setDirty(false);
           if (!nextResult.ok) {
-            return { ok: false, messages: nextResult.messages };
+            return {
+              ok: false,
+              tradeMode: nextResult.tradeMode,
+              postAum: nextResult.postAum,
+              messages: nextResult.messages,
+            };
+          }
+          if (nextResult.tradeMode === 'redemption') {
+            return {
+              ok: true,
+              tradeMode: nextResult.tradeMode,
+              transactionAmount: nextResult.transactionAmount,
+              redemptionPct: nextResult.redemptionRatio * 100,
+              postAum: nextResult.postAum,
+              postYtm: nextResult.postYtm,
+              postWam: nextResult.postWam,
+              postWal: nextResult.postWal,
+              institutions: nextResult.banks.map((bank) => ({
+                institution: bank.name,
+                redeemed: Math.abs(bank.transactionChange),
+                finalExposure: bank.finalExposure,
+                finalPct: bank.finalPct,
+              })),
+            };
           }
           return {
             ok: true,
+            tradeMode: nextResult.tradeMode,
+            transactionAmount: nextResult.transactionAmount,
+            postAum: nextResult.postAum,
             postYtm: nextResult.postYtm,
             postWam: nextResult.postWam,
             postWal: nextResult.postWal,
@@ -1472,19 +1737,26 @@ export default function Home() {
     return () => lifecycle.abort();
   }, []);
 
-  const postAum = portfolio.aum + portfolio.cash;
-  const currentWamInputError = termValueError(portfolio.wam, 'WAM');
-  const currentWalInputError = termValueError(portfolio.wal, 'WAL');
-  const currentWamWarning = currentTermComplianceWarning(
-    portfolio.wam,
-    'WAM',
-    SFC_MAX_WAM_DAYS,
-  );
-  const currentWalWarning = currentTermComplianceWarning(
-    portfolio.wal,
-    'WAL',
-    SFC_MAX_WAL_DAYS,
-  );
+  const isRedemption = portfolio.tradeMode === 'redemption';
+  const postAum = postAumOf(portfolio);
+  const aumInputError = !Number.isFinite(portfolio.aum)
+    ? '当前 AUM 必须是有效数字。'
+    : isRedemption && portfolio.aum <= 0
+      ? '净赎回时，当前 AUM 必须大于 0。'
+      : portfolio.aum < 0
+        ? '当前 AUM 不得小于 0。'
+        : null;
+  const transactionAmountError = !Number.isFinite(portfolio.transactionAmount)
+    ? `${isRedemption ? '净赎回金额' : '新增待配置资金'}必须是有效数字。`
+    : portfolio.transactionAmount < 0
+      ? `${isRedemption ? '净赎回金额' : '新增待配置资金'}不得小于 0。`
+      : isRedemption &&
+          Number.isFinite(portfolio.aum) &&
+          portfolio.transactionAmount >= portfolio.aum
+        ? '净赎回金额必须小于当前 AUM；全部赎回后无法计算组合指标。'
+        : null;
+  const currentWamValueError = termValueError(portfolio.wam, 'WAM');
+  const currentWalValueError = termValueError(portfolio.wal, 'WAL');
   const maxWamError = regulatoryTermError(
     portfolio.maxWam,
     'WAM',
@@ -1496,6 +1768,34 @@ export default function Home() {
     'WAL',
     SFC_MAX_WAL_DAYS,
     true,
+  );
+  const currentWamInputError =
+    currentWamValueError ??
+    (isRedemption &&
+    !maxWamError &&
+    portfolio.wam >
+      Math.min(portfolio.maxWam ?? SFC_MAX_WAM_DAYS, SFC_MAX_WAM_DAYS) + EPSILON
+      ? '同比例赎回不会改变 WAM；当前值仍高于交易后上限。'
+      : null);
+  const currentWalInputError =
+    currentWalValueError ??
+    (isRedemption &&
+    !maxWalError &&
+    portfolio.wal >
+      Math.min(portfolio.maxWal ?? SFC_MAX_WAL_DAYS, SFC_MAX_WAL_DAYS) + EPSILON
+      ? '同比例赎回不会改变 WAL；当前值仍高于交易后上限。'
+      : null);
+  const currentWamWarning = currentTermComplianceWarning(
+    portfolio.wam,
+    'WAM',
+    SFC_MAX_WAM_DAYS,
+    portfolio.tradeMode,
+  );
+  const currentWalWarning = currentTermComplianceWarning(
+    portfolio.wal,
+    'WAL',
+    SFC_MAX_WAL_DAYS,
+    portfolio.tradeMode,
   );
   const newBankLimitError = bankConcentrationError(newBankLimitPct);
   const newBankLimitNotice = bankConcentrationNotice(newBankLimitPct);
@@ -1520,26 +1820,36 @@ export default function Home() {
       )
       .map((bank) => bank.id),
   );
-  const bankExposureBreachIds = new Set(
-    banks
-      .filter(
-        (bank) =>
-          Number.isFinite(postAum) &&
-          postAum > 0 &&
-          !bankConcentrationError(bank.limitPct) &&
-          Number.isFinite(bank.currentExposure) &&
-          bank.currentExposure > (postAum * bank.limitPct) / 100 + EPSILON,
-      )
-      .map((bank) => bank.id),
+  const bankExposureBreachIds = isRedemption
+    ? currentBankExposureBreachIds
+    : new Set(
+        banks
+          .filter(
+            (bank) =>
+              Number.isFinite(postAum) &&
+              postAum > 0 &&
+              !bankConcentrationError(bank.limitPct) &&
+              Number.isFinite(bank.currentExposure) &&
+              postTradeExistingExposure(portfolio, bank.currentExposure) >
+                (postAum * bank.limitPct) / 100 + EPSILON,
+          )
+          .map((bank) => bank.id),
+      );
+  const bankExposureTotalError = institutionExposureTotalError(
+    portfolio,
+    banks,
   );
   const hasRegulatoryLimitViolation = Boolean(
     currentWamInputError ||
     currentWalInputError ||
+    aumInputError ||
+    transactionAmountError ||
     maxWamError ||
     maxWalError ||
     banks.some((bank) => bankConcentrationError(bank.limitPct)) ||
     bankExposureInvalidIds.size ||
-    bankExposureBreachIds.size,
+    bankExposureBreachIds.size ||
+    bankExposureTotalError,
   );
   const availableBankTemplates = useMemo(
     () =>
@@ -1553,11 +1863,14 @@ export default function Home() {
     [banks],
   );
   const frontiers = useMemo(
-    () => ({
-      wam: buildFrontier('wam', portfolio, banks, quotes),
-      wal: buildFrontier('wal', portfolio, banks, quotes),
-    }),
-    [portfolio, banks, quotes],
+    () =>
+      isRedemption
+        ? { wam: [], wal: [] }
+        : {
+            wam: buildFrontier('wam', portfolio, banks, quotes),
+            wal: buildFrontier('wal', portfolio, banks, quotes),
+          },
+    [portfolio, banks, quotes, isRedemption],
   );
   const clearTargetOutcome = () => {
     setTargetYtmError(null);
@@ -1638,31 +1951,41 @@ export default function Home() {
     setNewBankName('');
   };
   const calculate = () => {
-    setResult(optimise(portfolio, banks, quotes));
+    setResult(calculatePlan(portfolio, banks, quotes));
     setDirty(false);
+    clearTargetOutcome();
+  };
+  const changeTradeMode = (tradeMode: TradeMode) => {
+    const nextPortfolio = { ...portfolio, tradeMode };
+    setPortfolio(nextPortfolio);
+    setResult(calculatePlan(nextPortfolio, banks, quotes));
+    setDirty(false);
+    setTargetYtm(null);
     clearTargetOutcome();
   };
   const reset = () => {
     setPortfolio(initialPortfolio);
     setBanks(initialBanks);
     setQuotes(initialQuotes);
-    setResult(optimise(initialPortfolio, initialBanks, initialQuotes));
+    setResult(calculatePlan(initialPortfolio, initialBanks, initialQuotes));
     setDirty(false);
     setTargetYtm(null);
     setTargetYtmError(null);
     setTargetYtmMessage(null);
   };
   const selectFrontierDay = (mode: FrontierMode, day: number) => {
+    if (isRedemption) return;
     const nextPortfolio = {
       ...portfolio,
       ...(mode === 'wam' ? { maxWam: day } : { maxWal: day }),
     };
     setPortfolio(nextPortfolio);
-    setResult(optimise(nextPortfolio, banks, quotes));
+    setResult(optimiseSubscription(nextPortfolio, banks, quotes));
     setDirty(false);
     clearTargetOutcome();
   };
   const reverseTargetYtm = () => {
+    if (isRedemption) return;
     if (targetYtm === null || !Number.isFinite(targetYtm)) {
       setTargetYtmError('请输入有效的目标 YTM。');
       setTargetYtmMessage(null);
@@ -1715,7 +2038,9 @@ export default function Home() {
                 </Badge>
               </div>
               <p className="mt-0.5 text-sm text-slate-300">
-                在期限与机构集中度约束内，寻找最高收益配置
+                {isRedemption
+                  ? '测算同比例赎回后的组合与机构敞口'
+                  : '在期限与机构集中度约束内，寻找最高收益配置'}
               </p>
             </div>
           </div>
@@ -1762,33 +2087,69 @@ export default function Home() {
                 </Badge>
               </div>
             </div>
+            <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50/70 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-slate-800">
+                  今日资金方向
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {isRedemption
+                    ? '第一版按当前组合所有资产同比例赎回'
+                    : '将新增资金配置到今日可投产品'}
+                </p>
+              </div>
+              <fieldset className="grid w-full grid-cols-2 rounded-xl bg-slate-200/70 p-1 sm:w-auto">
+                <legend className="sr-only">选择今日资金方向</legend>
+                {(
+                  [
+                    ['subscription', '净申购'],
+                    ['redemption', '净赎回'],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={portfolio.tradeMode === mode}
+                    onClick={() => changeTradeMode(mode)}
+                    className={`rounded-lg px-5 py-2 text-sm font-semibold transition-colors ${
+                      portfolio.tradeMode === mode
+                        ? 'bg-white text-slate-950 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </fieldset>
+            </div>
             <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
               <NumberField
                 label="当前 AUM（绝对金额）"
                 value={portfolio.aum}
                 suffix={amountUnit}
                 min={0}
-                error={
-                  Number.isFinite(portfolio.aum) && portfolio.aum < 0
-                    ? '当前 AUM 不得小于 0。'
-                    : null
-                }
+                error={aumInputError}
                 onChange={(value) =>
                   updatePortfolio('aum', value ?? Number.NaN)
                 }
               />
               <NumberField
-                label="新增待配置资金（绝对金额）"
-                value={portfolio.cash}
+                label={
+                  isRedemption
+                    ? '净赎回金额（绝对金额）'
+                    : '新增待配置资金（绝对金额）'
+                }
+                value={portfolio.transactionAmount}
                 suffix={amountUnit}
                 min={0}
-                error={
-                  Number.isFinite(portfolio.cash) && portfolio.cash < 0
-                    ? '新增待配置资金不得小于 0。'
-                    : null
+                max={
+                  isRedemption && Number.isFinite(portfolio.aum)
+                    ? Math.max(0, portfolio.aum - EPSILON)
+                    : undefined
                 }
+                error={transactionAmountError}
                 onChange={(value) =>
-                  updatePortfolio('cash', value ?? Number.NaN)
+                  updatePortfolio('transactionAmount', value ?? Number.NaN)
                 }
               />
               <NumberField
@@ -1824,7 +2185,7 @@ export default function Home() {
                 }
               />
               <NumberField
-                label="WAM 上限"
+                label={isRedemption ? 'WAM 上限（合规检验）' : 'WAM 上限'}
                 value={portfolio.maxWam}
                 suffix="天"
                 optional
@@ -1834,7 +2195,7 @@ export default function Home() {
                 onChange={(value) => updatePortfolio('maxWam', value)}
               />
               <NumberField
-                label="WAL 上限"
+                label={isRedemption ? 'WAL 上限（合规检验）' : 'WAL 上限'}
                 value={portfolio.maxWal}
                 suffix="天"
                 optional
@@ -1845,10 +2206,20 @@ export default function Home() {
               />
             </div>
             <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
-              所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM +
-              新增待配置资金；新增资金尚未包含在当前 AUM 中。当前 WAM/WAL
-              是事实快照，超标时仍可录入以测算修复方案；目标留空时仍自动执行 SFC
-              监管上限 WAM 60 天、WAL 120 天。
+              {isRedemption ? (
+                <>
+                  所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM −
+                  净赎回金额。当前版本假设所有资产及机构敞口按相同比例缩减，因此
+                  YTM、WAM、WAL 与机构占比保持不变；已有超限也不会被修复。
+                </>
+              ) : (
+                <>
+                  所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM +
+                  新增待配置资金；新增资金尚未包含在当前 AUM 中。当前 WAM/WAL
+                  是事实快照，超标时仍可录入以测算修复方案；目标留空时仍自动执行
+                  SFC 监管上限 WAM 60 天、WAL 120 天。
+                </>
+              )}
             </p>
           </section>
 
@@ -1857,11 +2228,14 @@ export default function Home() {
               <div>
                 <p className="eyebrow">02 · 机构敞口</p>
                 <h2 className="mt-1 text-lg font-semibold">
-                  今日参与机构与集中度额度
+                  {isRedemption
+                    ? '当前机构持仓与赎回后集中度'
+                    : '今日参与机构与集中度额度'}
                 </h2>
               </div>
               <Badge variant="outline">
-                今日 {banks.length} 家 · 备选库 {bankLibrary.length} 家
+                {isRedemption ? '当前' : '今日'} {banks.length} 家 · 备选库{' '}
+                {bankLibrary.length} 家
               </Badge>
             </div>
 
@@ -1873,7 +2247,9 @@ export default function Home() {
                       合作机构备选库
                     </p>
                     <p className="mt-0.5 text-xs text-slate-500">
-                      选择后加入今天的敞口与报价名单
+                      {isRedemption
+                        ? '选择后加入当前机构持仓名单'
+                        : '选择后加入今天的敞口与报价名单'}
                     </p>
                   </div>
                   <Badge variant="secondary">仅保存在本机</Badge>
@@ -1914,7 +2290,7 @@ export default function Home() {
                     }
                     onClick={addBankFromLibrary}
                   >
-                    <Plus /> 加入今日
+                    <Plus /> {isRedemption ? '加入持仓' : '加入今日'}
                   </Button>
                 </div>
               </div>
@@ -2001,6 +2377,15 @@ export default function Home() {
               </div>
             </div>
 
+            {bankExposureTotalError ? (
+              <div className="border-b border-slate-100 px-5 py-4">
+                <Alert variant="destructive">
+                  <AlertTriangle />
+                  <AlertTitle>{bankExposureTotalError}</AlertTitle>
+                </Alert>
+              </div>
+            ) : null}
+
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
@@ -2012,9 +2397,9 @@ export default function Home() {
                     </span>
                   </TableHead>
                   <TableHead className="text-right">
-                    当前占比
+                    {isRedemption ? '赎回后占比（不变）' : '当前占比'}
                     <span className="block text-[11px] font-normal text-slate-400">
-                      占当前 AUM
+                      {isRedemption ? '与当前占比相同' : '占当前 AUM'}
                     </span>
                   </TableHead>
                   <TableHead className="text-right">
@@ -2024,13 +2409,13 @@ export default function Home() {
                     </span>
                   </TableHead>
                   <TableHead className="text-right">
-                    交易后额度上限
+                    {isRedemption ? '赎回后持仓' : '交易后额度上限'}
                     <span className="block text-[11px] font-normal text-slate-400">
                       绝对金额/{amountUnit}
                     </span>
                   </TableHead>
                   <TableHead className="text-right">
-                    本次最多可新增
+                    {isRedemption ? '预计同比例赎回' : '本次最多可新增'}
                     <span className="block text-[11px] font-normal text-slate-400">
                       绝对金额/{amountUnit}
                     </span>
@@ -2049,9 +2434,14 @@ export default function Home() {
                   const finalCap = concentrationError
                     ? Number.NaN
                     : (postAum * bank.limitPct) / 100;
-                  const remaining = Math.max(
+                  const postTradeExposure = postTradeExistingExposure(
+                    portfolio,
+                    bank.currentExposure,
+                  );
+                  const remaining = Math.max(0, finalCap - postTradeExposure);
+                  const redeemed = Math.max(
                     0,
-                    finalCap - bank.currentExposure,
+                    bank.currentExposure - postTradeExposure,
                   );
                   const hasQuotes = quotes.some(
                     (quote) => quote.bankId === bank.id,
@@ -2073,7 +2463,7 @@ export default function Home() {
                           {bank.name}
                         </p>
                         <p className="mt-0.5 text-xs text-slate-400">
-                          今日名单
+                          {isRedemption ? '当前持仓名单' : '今日名单'}
                         </p>
                       </TableCell>
                       <TableCell
@@ -2103,8 +2493,14 @@ export default function Home() {
                             </span>
                           ) : postTradeExposureBreach ? (
                             <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
-                              计入新增资金后仍超过适用上限 {number(finalCap)}{' '}
-                              {amountUnit}。
+                              {isRedemption ? (
+                                <>同比例赎回后占比不变，仍超过适用上限。</>
+                              ) : (
+                                <>
+                                  计入新增资金后仍超过适用上限{' '}
+                                  {number(finalCap)} {amountUnit}。
+                                </>
+                              )}
                             </span>
                           ) : currentExposureBreach ? (
                             <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
@@ -2171,18 +2567,20 @@ export default function Home() {
                         </div>
                       </TableCell>
                       <TableCell className="text-right font-medium text-slate-700">
-                        {number(finalCap)}
+                        {number(isRedemption ? postTradeExposure : finalCap)}
                       </TableCell>
                       <TableCell className="text-right font-semibold text-teal-700">
-                        {number(remaining)}
+                        {number(isRedemption ? redeemed : remaining)}
                       </TableCell>
                       <TableCell>
                         <Button
-                          aria-label={`将${bank.name}移出今日名单`}
+                          aria-label={`将${bank.name}移出${isRedemption ? '当前持仓名单' : '今日名单'}`}
                           title={
                             hasQuotes
-                              ? '请先删除该机构的今日报价'
-                              : '移出今日名单，但保留在合作机构备选库'
+                              ? isRedemption
+                                ? '该机构仍有关联报价；请切换到净申购后先删除关联报价'
+                                : '请先删除该机构的今日报价'
+                              : `移出${isRedemption ? '当前持仓名单' : '今日名单'}，但保留在合作机构备选库`
                           }
                           variant="ghost"
                           size="icon-sm"
@@ -2207,7 +2605,9 @@ export default function Home() {
                       colSpan={7}
                       className="h-20 text-center text-sm text-slate-500"
                     >
-                      请先从合作机构备选库加入今天参与报价的机构。
+                      {isRedemption
+                        ? '请先从合作机构备选库加入当前持仓机构。'
+                        : '请先从合作机构备选库加入今天参与报价的机构。'}
                     </TableCell>
                   </TableRow>
                 ) : null}
@@ -2215,10 +2615,25 @@ export default function Home() {
             </Table>
             <div className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
               <p>
-                当前占比 = 当前持仓 ÷ 当前 AUM；交易后额度上限 =（当前 AUM +
-                新增待配置资金）× 集中度上限；本次最多可新增 = 交易后额度上限 −
-                当前持仓。
+                {isRedemption ? (
+                  <>
+                    赎回后持仓 = 当前持仓 ×（交易后 AUM ÷ 当前
+                    AUM）；同比例赎回金额 = 当前持仓 −
+                    赎回后持仓。机构占比不会因同比例赎回改变。
+                  </>
+                ) : (
+                  <>
+                    当前占比 = 当前持仓 ÷ 当前 AUM；交易后额度上限 =（当前 AUM +
+                    新增待配置资金）× 集中度上限；本次最多可新增 =
+                    交易后额度上限 − 当前持仓。
+                  </>
+                )}
               </p>
+              {isRedemption && quotes.length ? (
+                <p className="mt-1">
+                  净申购模式中的关联报价会保留；如需移除有关联报价的机构，请先切换到净申购并删除对应报价。
+                </p>
+              ) : null}
               <p className="mt-1">
                 同一机构的全部产品合并占用额度。单一实体一般上限为
                 10%；仅当该实体为符合条件的实质金融机构，并经合规确认满足
@@ -2231,174 +2646,208 @@ export default function Home() {
           <section className={card}>
             <div className="section-head">
               <div>
-                <p className="eyebrow">03 · 市场报价</p>
+                <p className="eyebrow">
+                  03 · {isRedemption ? '赎回规则' : '市场报价'}
+                </p>
                 <h2 className="mt-1 text-lg font-semibold">
-                  今日可投产品与报价
+                  {isRedemption ? '按现有组合同比例赎回' : '今日可投产品与报价'}
                 </h2>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!banks.length}
-                onClick={() => {
-                  setQuotes((old) => [
-                    ...old,
-                    {
-                      id: id('quote'),
-                      name: '新产品',
-                      bankId: banks[0].id,
-                      wamDays: null,
-                      walDays: 30,
-                      rate: 3,
-                      cap: portfolio.cash,
-                    },
-                  ]);
-                  setDirty(true);
-                  clearTargetOutcome();
-                }}
-              >
-                <Plus /> 添加报价
-              </Button>
+              {isRedemption ? (
+                <Badge className="bg-teal-50 text-teal-800">
+                  不使用今日报价
+                </Badge>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!banks.length}
+                  onClick={() => {
+                    setQuotes((old) => [
+                      ...old,
+                      {
+                        id: id('quote'),
+                        name: '新产品',
+                        bankId: banks[0].id,
+                        wamDays: null,
+                        walDays: 30,
+                        rate: 3,
+                        cap: portfolio.transactionAmount,
+                      },
+                    ]);
+                    setDirty(true);
+                    clearTargetOutcome();
+                  }}
+                >
+                  <Plus /> 添加报价
+                </Button>
+              )}
             </div>
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
-                  <TableHead className="pl-5">产品</TableHead>
-                  <TableHead>机构</TableHead>
-                  <TableHead className="text-right">WAM/天</TableHead>
-                  <TableHead className="text-right">WAL/天</TableHead>
-                  <TableHead className="text-right">利率/%</TableHead>
-                  <TableHead className="text-right">
-                    本次可投上限
-                    <span className="block text-[11px] font-normal text-slate-400">
-                      绝对金额/{amountUnit}
-                    </span>
-                  </TableHead>
-                  <TableHead className="w-12" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {quotes.map((quote) => (
-                  <TableRow key={quote.id}>
-                    <TableCell className="min-w-48 pl-5">
-                      <Input
-                        aria-label="产品名称"
-                        value={quote.name}
-                        onChange={(event) =>
-                          updateQuote(quote.id, { name: event.target.value })
-                        }
-                      />
-                    </TableCell>
-                    <TableCell className="min-w-32">
-                      <NativeSelect
-                        aria-label={`${quote.name}机构`}
-                        value={quote.bankId}
-                        onChange={(event) =>
-                          updateQuote(quote.id, { bankId: event.target.value })
-                        }
-                        className="w-full"
-                      >
-                        {banks.map((bank) => (
-                          <NativeSelectOption value={bank.id} key={bank.id}>
-                            {bank.name}
-                          </NativeSelectOption>
+            {isRedemption ? (
+              <div className="p-5">
+                <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-4">
+                  <p className="text-sm font-semibold text-slate-900">
+                    当前版本不选择具体赎回产品
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    系统按“净赎回金额 ÷ 当前
+                    AUM”的比例，同步缩减现有组合中的所有资产和机构敞口。因此
+                    YTM、WAM、WAL 与机构占比保持不变。
+                  </p>
+                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                    如果实际业务是优先使用现金、到期资产或指定产品，需在后续版本录入现有持仓明细后再优化赎回来源。
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <>
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
+                      <TableHead className="pl-5">产品</TableHead>
+                      <TableHead>机构</TableHead>
+                      <TableHead className="text-right">WAM/天</TableHead>
+                      <TableHead className="text-right">WAL/天</TableHead>
+                      <TableHead className="text-right">利率/%</TableHead>
+                      <TableHead className="text-right">
+                        本次可投上限
+                        <span className="block text-[11px] font-normal text-slate-400">
+                          绝对金额/{amountUnit}
+                        </span>
+                      </TableHead>
+                      <TableHead className="w-12" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {quotes.map((quote) => (
+                      <TableRow key={quote.id}>
+                        <TableCell className="min-w-48 pl-5">
+                          <Input
+                            aria-label="产品名称"
+                            value={quote.name}
+                            onChange={(event) =>
+                              updateQuote(quote.id, {
+                                name: event.target.value,
+                              })
+                            }
+                          />
+                        </TableCell>
+                        <TableCell className="min-w-32">
+                          <NativeSelect
+                            aria-label={`${quote.name}机构`}
+                            value={quote.bankId}
+                            onChange={(event) =>
+                              updateQuote(quote.id, {
+                                bankId: event.target.value,
+                              })
+                            }
+                            className="w-full"
+                          >
+                            {banks.map((bank) => (
+                              <NativeSelectOption value={bank.id} key={bank.id}>
+                                {bank.name}
+                              </NativeSelectOption>
+                            ))}
+                          </NativeSelect>
+                        </TableCell>
+                        <TableCell className="min-w-24">
+                          <EditableNumberInput
+                            aria-label={`${quote.name}计入WAM的天数`}
+                            value={quote.wamDays}
+                            placeholder="同 WAL"
+                            min={0}
+                            step={1}
+                            onValueChange={(value) =>
+                              updateQuote(quote.id, { wamDays: value })
+                            }
+                            aria-invalid={
+                              (quote.wamDays !== null &&
+                                (!Number.isFinite(quote.wamDays) ||
+                                  quote.wamDays < 0 ||
+                                  quote.wamDays > quote.walDays)) ||
+                              undefined
+                            }
+                            className="text-right"
+                          />
+                        </TableCell>
+                        <TableCell className="min-w-24">
+                          <EditableNumberInput
+                            aria-label={`${quote.name}计入WAL的天数`}
+                            value={quote.walDays}
+                            min={0}
+                            step={1}
+                            onValueChange={(value) =>
+                              updateQuote(quote.id, {
+                                walDays: value ?? Number.NaN,
+                              })
+                            }
+                            aria-invalid={
+                              !Number.isFinite(quote.walDays) ||
+                              quote.walDays < 0 ||
+                              quoteWamDays(quote) > quote.walDays ||
+                              undefined
+                            }
+                            className="text-right"
+                          />
+                        </TableCell>
+                        {(
+                          [
+                            ['rate', quote.rate, '利率'],
+                            ['cap', quote.cap, '报价额度'],
+                          ] as const
+                        ).map(([key, value, inputLabel]) => (
+                          <TableCell className="min-w-24" key={key}>
+                            <EditableNumberInput
+                              aria-label={`${quote.name}${inputLabel}`}
+                              value={value}
+                              min={key === 'cap' ? 0 : undefined}
+                              step="0.01"
+                              onValueChange={(nextValue) =>
+                                updateQuote(quote.id, {
+                                  [key]: nextValue ?? Number.NaN,
+                                })
+                              }
+                              aria-invalid={
+                                !Number.isFinite(value) || undefined
+                              }
+                              className="text-right"
+                            />
+                          </TableCell>
                         ))}
-                      </NativeSelect>
-                    </TableCell>
-                    <TableCell className="min-w-24">
-                      <EditableNumberInput
-                        aria-label={`${quote.name}计入WAM的天数`}
-                        value={quote.wamDays}
-                        placeholder="同 WAL"
-                        min={0}
-                        step={1}
-                        onValueChange={(value) =>
-                          updateQuote(quote.id, { wamDays: value })
-                        }
-                        aria-invalid={
-                          (quote.wamDays !== null &&
-                            (!Number.isFinite(quote.wamDays) ||
-                              quote.wamDays < 0 ||
-                              quote.wamDays > quote.walDays)) ||
-                          undefined
-                        }
-                        className="text-right"
-                      />
-                    </TableCell>
-                    <TableCell className="min-w-24">
-                      <EditableNumberInput
-                        aria-label={`${quote.name}计入WAL的天数`}
-                        value={quote.walDays}
-                        min={0}
-                        step={1}
-                        onValueChange={(value) =>
-                          updateQuote(quote.id, {
-                            walDays: value ?? Number.NaN,
-                          })
-                        }
-                        aria-invalid={
-                          !Number.isFinite(quote.walDays) ||
-                          quote.walDays < 0 ||
-                          quoteWamDays(quote) > quote.walDays ||
-                          undefined
-                        }
-                        className="text-right"
-                      />
-                    </TableCell>
-                    {(
-                      [
-                        ['rate', quote.rate, '利率'],
-                        ['cap', quote.cap, '报价额度'],
-                      ] as const
-                    ).map(([key, value, inputLabel]) => (
-                      <TableCell className="min-w-24" key={key}>
-                        <EditableNumberInput
-                          aria-label={`${quote.name}${inputLabel}`}
-                          value={value}
-                          min={key === 'cap' ? 0 : undefined}
-                          step="0.01"
-                          onValueChange={(nextValue) =>
-                            updateQuote(quote.id, {
-                              [key]: nextValue ?? Number.NaN,
-                            })
-                          }
-                          aria-invalid={!Number.isFinite(value) || undefined}
-                          className="text-right"
-                        />
-                      </TableCell>
+                        <TableCell>
+                          <Button
+                            aria-label={`删除${quote.name}`}
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => {
+                              setQuotes((old) =>
+                                old.filter((item) => item.id !== quote.id),
+                              );
+                              setDirty(true);
+                              clearTargetOutcome();
+                            }}
+                          >
+                            <Trash2 />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
                     ))}
-                    <TableCell>
-                      <Button
-                        aria-label={`删除${quote.name}`}
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={() => {
-                          setQuotes((old) =>
-                            old.filter((item) => item.id !== quote.id),
-                          );
-                          setDirty(true);
-                          clearTargetOutcome();
-                        }}
-                      >
-                        <Trash2 />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
-              WAL 填剩余最终到期天数。WAM 留空时自动按 WAL
-              处理；仅在已确认浮息工具可按下一次利率重定价计量时，填写更短的 WAM
-              天数。报价额度与 AUM 使用同一绝对金额单位。
-            </p>
+                  </TableBody>
+                </Table>
+                <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
+                  WAL 填剩余最终到期天数。WAM 留空时自动按 WAL
+                  处理；仅在已确认浮息工具可按下一次利率重定价计量时，填写更短的
+                  WAM 天数。报价额度与 AUM 使用同一绝对金额单位。
+                </p>
+              </>
+            )}
           </section>
 
           {hasRegulatoryLimitViolation ? (
             <Alert variant="destructive" aria-live="assertive">
               <AlertTriangle />
               <AlertTitle>
-                存在超出监管硬上限或无效的输入，请先修正标红字段。
+                存在超出监管硬上限、持仓合计异常或无效输入，请先修正上方提示。
               </AlertTitle>
             </Alert>
           ) : null}
@@ -2408,19 +2857,27 @@ export default function Home() {
           >
             <div className="flex items-center gap-2 text-sm text-slate-500">
               <ShieldCheck className="size-4 text-teal-600" />
-              连续金额优化；未配置资金按零期限、零收益现金处理
+              {isRedemption
+                ? '按现有组合同比例扣减；不使用市场报价'
+                : '连续金额优化；未配置资金按零期限、零收益现金处理'}
             </div>
-            <div className="flex gap-2">
-              <Button variant="outline" size="lg" onClick={reset}>
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={reset}
+                className="w-full sm:w-auto"
+              >
                 <RefreshCcw /> 恢复示例
               </Button>
               <Button
                 size="lg"
                 onClick={calculate}
                 disabled={hasRegulatoryLimitViolation}
-                className="bg-teal-600 px-5 text-white hover:bg-teal-700"
+                className="w-full bg-teal-600 px-5 text-white hover:bg-teal-700 sm:w-auto"
               >
-                计算最优配置 <ArrowRight />
+                {isRedemption ? '测算赎回后组合' : '计算最优配置'}{' '}
+                <ArrowRight />
               </Button>
             </div>
           </div>
@@ -2432,10 +2889,12 @@ export default function Home() {
               <div>
                 <p className="eyebrow">决策面板</p>
                 <h2 className="mt-1 text-lg font-semibold">
-                  收益前沿与推荐配置
+                  {isRedemption ? '赎回后组合快照' : '收益前沿与推荐配置'}
                 </h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  前沿随输入实时更新；配置结果以最近一次计算为准
+                  {isRedemption
+                    ? '按现有组合同比例缩减；结果以最近一次测算为准'
+                    : '前沿随输入实时更新；配置结果以最近一次计算为准'}
                 </p>
               </div>
               {hasRegulatoryLimitViolation ? (
@@ -2453,74 +2912,95 @@ export default function Home() {
               )}
             </div>
 
-            <div className="border-b border-slate-100">
-              <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
-                <div>
-                  <p className="eyebrow">收益前沿</p>
-                  <h3 className="mt-1 flex items-center gap-2 text-base font-semibold">
-                    <TrendingUp className="size-4 text-teal-700" />
-                    多一天期限，换来多少收益
+            {isRedemption ? (
+              <div className="border-b border-slate-100 p-5">
+                <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-4">
+                  <p className="eyebrow">赎回影响</p>
+                  <h3 className="mt-1 text-base font-semibold">
+                    同比例赎回不改变期限与收益指标
                   </h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    本模式没有新的买入配置，因此不展示收益前沿或目标 YTM
+                    反推。交易后结果仅由赎回金额和当前组合快照决定。
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="border-b border-slate-100">
+                <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
+                  <div>
+                    <p className="eyebrow">收益前沿</p>
+                    <h3 className="mt-1 flex items-center gap-2 text-base font-semibold">
+                      <TrendingUp className="size-4 text-teal-700" />
+                      多一天期限，换来多少收益
+                    </h3>
+                  </div>
+                  <div
+                    className="inline-flex rounded-xl bg-slate-100 p-1"
+                    role="tablist"
+                    aria-label="选择期限指标"
+                  >
+                    {(['wam', 'wal'] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        id={`${mode}-frontier-tab`}
+                        type="button"
+                        role="tab"
+                        aria-selected={frontierMode === mode}
+                        aria-controls="frontier-panel"
+                        onClick={() => {
+                          setFrontierMode(mode);
+                          clearTargetOutcome();
+                        }}
+                        className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                          frontierMode === mode
+                            ? 'bg-white text-slate-950 shadow-sm'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        {mode.toUpperCase()} 曲线
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div
-                  className="inline-flex rounded-xl bg-slate-100 p-1"
-                  role="tablist"
-                  aria-label="选择期限指标"
+                  id="frontier-panel"
+                  role="tabpanel"
+                  aria-labelledby={`${frontierMode}-frontier-tab`}
                 >
-                  {(['wam', 'wal'] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      id={`${mode}-frontier-tab`}
-                      type="button"
-                      role="tab"
-                      aria-selected={frontierMode === mode}
-                      aria-controls="frontier-panel"
-                      onClick={() => {
-                        setFrontierMode(mode);
-                        clearTargetOutcome();
-                      }}
-                      className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-                        frontierMode === mode
-                          ? 'bg-white text-slate-950 shadow-sm'
-                          : 'text-slate-500 hover:text-slate-800'
-                      }`}
-                    >
-                      {mode.toUpperCase()} 曲线
-                    </button>
-                  ))}
+                  <FrontierPanel
+                    mode={frontierMode}
+                    points={frontiers[frontierMode]}
+                    currentLimit={
+                      frontierMode === 'wam'
+                        ? portfolio.maxWam
+                        : portfolio.maxWal
+                    }
+                    otherLimit={
+                      frontierMode === 'wam'
+                        ? portfolio.maxWal
+                        : portfolio.maxWam
+                    }
+                    onSelect={(day) => selectFrontierDay(frontierMode, day)}
+                    targetYtm={targetYtm}
+                    targetYtmError={targetYtmError}
+                    targetYtmMessage={targetYtmMessage}
+                    onTargetYtmChange={(value) => {
+                      setTargetYtm(value);
+                      clearTargetOutcome();
+                    }}
+                    onSolveTarget={reverseTargetYtm}
+                    disabled={hasRegulatoryLimitViolation}
+                  />
                 </div>
               </div>
-              <div
-                id="frontier-panel"
-                role="tabpanel"
-                aria-labelledby={`${frontierMode}-frontier-tab`}
-              >
-                <FrontierPanel
-                  mode={frontierMode}
-                  points={frontiers[frontierMode]}
-                  currentLimit={
-                    frontierMode === 'wam' ? portfolio.maxWam : portfolio.maxWal
-                  }
-                  otherLimit={
-                    frontierMode === 'wam' ? portfolio.maxWal : portfolio.maxWam
-                  }
-                  onSelect={(day) => selectFrontierDay(frontierMode, day)}
-                  targetYtm={targetYtm}
-                  targetYtmError={targetYtmError}
-                  targetYtmMessage={targetYtmMessage}
-                  onTargetYtmChange={(value) => {
-                    setTargetYtm(value);
-                    clearTargetOutcome();
-                  }}
-                  onSolveTarget={reverseTargetYtm}
-                  disabled={hasRegulatoryLimitViolation}
-                />
-              </div>
-            </div>
+            )}
 
             <div className="border-b border-slate-100 px-5 py-4">
-              <p className="eyebrow">最优解</p>
-              <h3 className="mt-1 text-base font-semibold">推荐配置</h3>
+              <p className="eyebrow">{isRedemption ? '测算结果' : '最优解'}</p>
+              <h3 className="mt-1 text-base font-semibold">
+                {isRedemption ? '同比例赎回结果' : '推荐配置'}
+              </h3>
             </div>
 
             {hasRegulatoryLimitViolation ? (
@@ -2528,126 +3008,180 @@ export default function Home() {
                 <Alert variant="destructive" className="p-4">
                   <AlertTriangle />
                   <AlertTitle>
-                    推荐配置已暂时隐藏。请先修正标红字段，再重新计算。
+                    {isRedemption
+                      ? '赎回测算已暂时隐藏。请先修正标红字段，再重新测算。'
+                      : '推荐配置已暂时隐藏。请先修正标红字段，再重新计算。'}
                   </AlertTitle>
                 </Alert>
               </div>
             ) : result.ok ? (
-              <div className={dirty ? 'opacity-55 transition-opacity' : ''}>
-                <div className="grid grid-cols-2 gap-3 p-5">
+              <div
+                aria-live="polite"
+                className={dirty ? 'opacity-55 transition-opacity' : ''}
+              >
+                {result.tradeMode === 'redemption' ? (
+                  <div className="px-5 pt-5">
+                    <div className="flex items-center justify-between gap-4 rounded-xl border border-teal-200 bg-teal-50/70 px-4 py-3">
+                      <div>
+                        <p className="text-xs font-medium text-slate-500">
+                          本次赎回比例
+                        </p>
+                        <p className="mt-0.5 text-sm text-slate-600">
+                          净赎回金额 ÷ 当前 AUM
+                        </p>
+                      </div>
+                      <p className="text-xl font-semibold tabular-nums text-teal-800">
+                        {percent(result.redemptionRatio * 100, 2)}
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2">
                   <Metric
                     label="交易后 AUM"
                     value={`${number(result.postAum)} ${amountUnit}`}
-                    detail={`新增 ${number(result.newMoneyAmount)} ${amountUnit}`}
+                    detail={`${result.tradeMode === 'redemption' ? '赎回' : '新增'} ${number(result.transactionAmount)} ${amountUnit}`}
                   />
                   <Metric
                     label="交易后 YTM"
                     value={percent(result.postYtm, 3)}
-                    detail={`新增资金 ${percent(result.newMoneyYield, 3)}`}
+                    detail={
+                      result.tradeMode === 'redemption'
+                        ? '同比例赎回，与当前组合一致'
+                        : `新增资金 ${percent(result.allocationYield, 3)}`
+                    }
                     accent
                   />
                   <Metric
                     label="交易后 WAM"
                     value={`${number(result.postWam)} 天`}
-                    detail={`计算所用上限 ${number(result.appliedMaxWam)} 天`}
+                    detail={
+                      result.tradeMode === 'redemption'
+                        ? '同比例赎回，与当前组合一致'
+                        : `计算所用上限 ${number(result.appliedMaxWam)} 天`
+                    }
                   />
                   <Metric
                     label="交易后 WAL"
                     value={`${number(result.postWal)} 天`}
-                    detail={`计算所用上限 ${number(result.appliedMaxWal)} 天`}
+                    detail={
+                      result.tradeMode === 'redemption'
+                        ? '同比例赎回，与当前组合一致'
+                        : `计算所用上限 ${number(result.appliedMaxWal)} 天`
+                    }
                   />
                 </div>
 
-                {result.unallocated > EPSILON ? (
-                  <div className="px-5 pb-4">
-                    <Alert className="border-amber-200 bg-amber-50">
-                      <AlertTriangle />
-                      <AlertTitle>
-                        仍有 {number(result.unallocated)} {amountUnit}{' '}
-                        未配置，期限或额度约束已限制继续投资。
-                      </AlertTitle>
-                    </Alert>
-                  </div>
-                ) : null}
+                {result.tradeMode === 'subscription' ? (
+                  <>
+                    {result.unallocated > EPSILON ? (
+                      <div className="px-5 pb-4">
+                        <Alert className="border-amber-200 bg-amber-50">
+                          <AlertTriangle />
+                          <AlertTitle>
+                            仍有 {number(result.unallocated)} {amountUnit}{' '}
+                            未配置，期限或额度约束已限制继续投资。
+                          </AlertTitle>
+                        </Alert>
+                      </div>
+                    ) : null}
 
-                <div className="border-t border-slate-100">
-                  <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
-                    推荐金额与新增资金占比
-                  </h3>
-                  {result.allocations.length || result.unallocated > EPSILON ? (
-                    <div className="divide-y divide-slate-100">
-                      {[...result.allocations]
-                        .sort((a, b) => b.amount * b.rate - a.amount * a.rate)
-                        .map((item) => (
-                          <div
-                            key={item.id}
-                            className="flex items-center justify-between gap-3 px-5 py-3"
-                          >
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium">
-                                {item.name}
-                              </p>
-                              <p className="mt-0.5 text-xs text-slate-500">
-                                {bankNames.get(item.bankId)} · WAM/WAL{' '}
-                                {number(quoteWamDays(item), 0)}/
-                                {number(item.walDays, 0)}天 ·{' '}
-                                {percent(item.rate)}
-                              </p>
+                    <div className="border-t border-slate-100">
+                      <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
+                        推荐金额与新增资金占比
+                      </h3>
+                      {result.allocations.length ||
+                      result.unallocated > EPSILON ? (
+                        <div className="divide-y divide-slate-100">
+                          {[...result.allocations]
+                            .sort(
+                              (a, b) => b.amount * b.rate - a.amount * a.rate,
+                            )
+                            .map((item) => (
+                              <div
+                                key={item.id}
+                                className="flex items-center justify-between gap-3 px-5 py-3"
+                              >
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-medium">
+                                    {item.name}
+                                  </p>
+                                  <p className="mt-0.5 text-xs text-slate-500">
+                                    {bankNames.get(item.bankId)} · WAM/WAL{' '}
+                                    {number(quoteWamDays(item), 0)}/
+                                    {number(item.walDays, 0)}天 ·{' '}
+                                    {percent(item.rate)}
+                                  </p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="font-semibold tabular-nums">
+                                    {number(item.amount)}
+                                  </p>
+                                  <p className="text-xs text-slate-400">
+                                    {amountUnit} · 占新增资金{' '}
+                                    {result.transactionAmount > EPSILON
+                                      ? percent(
+                                          (item.amount /
+                                            result.transactionAmount) *
+                                            100,
+                                          1,
+                                        )
+                                      : '—'}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                          {result.unallocated > EPSILON ? (
+                            <div className="flex items-center justify-between gap-3 px-5 py-3">
+                              <div>
+                                <p className="text-sm font-medium">保留现金</p>
+                                <p className="mt-0.5 text-xs text-slate-500">
+                                  零期限 · 零收益
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                <p className="font-semibold tabular-nums">
+                                  {number(result.unallocated)}
+                                </p>
+                                <p className="text-xs text-slate-400">
+                                  {amountUnit} · 占新增资金{' '}
+                                  {result.transactionAmount > EPSILON
+                                    ? percent(
+                                        (result.unallocated /
+                                          result.transactionAmount) *
+                                          100,
+                                        1,
+                                      )
+                                    : '—'}
+                                </p>
+                              </div>
                             </div>
-                            <div className="text-right">
-                              <p className="font-semibold tabular-nums">
-                                {number(item.amount)}
-                              </p>
-                              <p className="text-xs text-slate-400">
-                                {amountUnit} · 占新增资金{' '}
-                                {result.newMoneyAmount > EPSILON
-                                  ? percent(
-                                      (item.amount / result.newMoneyAmount) *
-                                        100,
-                                      1,
-                                    )
-                                  : '—'}
-                              </p>
-                            </div>
-                          </div>
-                        ))}
-                      {result.unallocated > EPSILON ? (
-                        <div className="flex items-center justify-between gap-3 px-5 py-3">
-                          <div>
-                            <p className="text-sm font-medium">保留现金</p>
-                            <p className="mt-0.5 text-xs text-slate-500">
-                              零期限 · 零收益
-                            </p>
-                          </div>
-                          <div className="text-right">
-                            <p className="font-semibold tabular-nums">
-                              {number(result.unallocated)}
-                            </p>
-                            <p className="text-xs text-slate-400">
-                              {amountUnit} · 占新增资金{' '}
-                              {result.newMoneyAmount > EPSILON
-                                ? percent(
-                                    (result.unallocated /
-                                      result.newMoneyAmount) *
-                                      100,
-                                    1,
-                                  )
-                                : '—'}
-                            </p>
-                          </div>
+                          ) : null}
                         </div>
-                      ) : null}
+                      ) : (
+                        <p className="px-5 pb-4 text-sm text-slate-500">
+                          当前约束下没有正收益配置。
+                        </p>
+                      )}
                     </div>
-                  ) : (
-                    <p className="px-5 pb-4 text-sm text-slate-500">
-                      当前约束下没有正收益配置。
+                  </>
+                ) : (
+                  <div className="border-t border-slate-100 px-5 py-4">
+                    <p className="text-sm font-semibold text-slate-800">
+                      按比例缩减现有持仓
                     </p>
-                  )}
-                </div>
+                    <p className="mt-1 text-sm leading-6 text-slate-500">
+                      当前只有组合与机构级汇总数据，因此不生成产品级赎回顺序。下列为已录入机构敞口随组合缩减的影响；其余赎回来自未逐项录入的资产。
+                    </p>
+                  </div>
+                )}
 
                 <div className="border-t border-slate-100">
                   <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
-                    <Landmark className="size-4 text-teal-700" /> 交易后机构占比
+                    <Landmark className="size-4 text-teal-700" />{' '}
+                    {result.tradeMode === 'redemption'
+                      ? '机构同比例赎回明细'
+                      : '交易后机构占比'}
                   </h3>
                   <div className="space-y-4 px-5 pb-5">
                     {result.banks.map((bank) => {
@@ -2655,10 +3189,10 @@ export default function Home() {
                         bank.limitPct > 0
                           ? Math.min(100, (bank.finalPct / bank.limitPct) * 100)
                           : 0;
-                      const atLimit = bank.remaining <= 0.001;
+                      const atLimit = bank.finalPct >= bank.limitPct - 1e-7;
                       return (
                         <div key={bank.id}>
-                          <div className="mb-1.5 flex justify-between text-sm">
+                          <div className="mb-1.5 flex flex-col gap-1 text-sm sm:flex-row sm:justify-between">
                             <span className="font-medium text-slate-700">
                               {bank.name}
                             </span>
@@ -2675,9 +3209,21 @@ export default function Home() {
                               style={{ width: `${used}%` }}
                             />
                           </div>
-                          <div className="mt-1 flex justify-between text-xs text-slate-400">
+                          <div className="mt-1 flex flex-col gap-1 text-xs text-slate-400 sm:flex-row sm:justify-between">
                             <span>
-                              新增 {number(bank.added)} {amountUnit}
+                              {result.tradeMode === 'redemption' ? (
+                                <>
+                                  赎回{' '}
+                                  {number(Math.abs(bank.transactionChange))}{' '}
+                                  {amountUnit} · 剩余{' '}
+                                  {number(bank.finalExposure)} {amountUnit}
+                                </>
+                              ) : (
+                                <>
+                                  新增 {number(bank.transactionChange)}{' '}
+                                  {amountUnit}
+                                </>
+                              )}
                             </span>
                             <span>
                               {atLimit
@@ -2692,7 +3238,7 @@ export default function Home() {
                 </div>
               </div>
             ) : (
-              <div className="p-5">
+              <div aria-live="polite" className="p-5">
                 <Alert variant="destructive" className="p-4">
                   <AlertTriangle />
                   <div>
