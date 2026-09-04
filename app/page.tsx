@@ -69,8 +69,11 @@ type Bank = {
   id: string;
   templateId: string | null;
   name: string;
-  currentExposure: number;
   limitPct: number;
+};
+
+type ModelBank = Bank & {
+  currentExposure: number;
 };
 
 type BankTemplate = {
@@ -91,7 +94,20 @@ type Quote = {
   cap: number;
 };
 
-type BankOutcome = Bank & {
+type Holding = {
+  id: string;
+  name: string;
+  bankId: string | null;
+  amount: number;
+  isBalancing?: boolean;
+};
+
+type HoldingOutcome = Holding & {
+  redeemed: number;
+  finalAmount: number;
+};
+
+type BankOutcome = ModelBank & {
   transactionChange: number;
   finalExposure: number;
   finalPct: number;
@@ -121,6 +137,7 @@ type SubscriptionSuccessResult = BaseSuccessResult & {
 type RedemptionSuccessResult = BaseSuccessResult & {
   tradeMode: 'redemption';
   redemptionRatio: number;
+  holdings: HoldingOutcome[];
 };
 
 type SuccessResult = SubscriptionSuccessResult | RedemptionSuccessResult;
@@ -192,22 +209,53 @@ const initialBanks: Bank[] = [
     id: 'today-bank-a',
     templateId: 'bank-a',
     name: '银行 A',
-    currentExposure: 25,
     limitPct: 25,
   },
   {
     id: 'today-bank-b',
     templateId: 'bank-b',
     name: '银行 B',
-    currentExposure: 10,
     limitPct: 25,
   },
   {
     id: 'today-bank-c',
     templateId: 'bank-c',
     name: '金融机构 C',
-    currentExposure: 5,
     limitPct: 10,
+  },
+];
+
+const initialHoldings: Holding[] = [
+  {
+    id: 'holding-a-90',
+    name: 'A行 90天定存',
+    bankId: 'today-bank-a',
+    amount: 15,
+  },
+  {
+    id: 'holding-a-30',
+    name: 'A行 30天定存',
+    bankId: 'today-bank-a',
+    amount: 10,
+  },
+  {
+    id: 'holding-b-floating',
+    name: 'B行浮息票据',
+    bankId: 'today-bank-b',
+    amount: 10,
+  },
+  {
+    id: 'holding-c-7',
+    name: 'C机构 7天票据',
+    bankId: 'today-bank-c',
+    amount: 5,
+  },
+  {
+    id: 'holding-other',
+    name: '现金及其他不计单一实体集中度资产',
+    bankId: null,
+    amount: 60,
+    isBalancing: true,
   },
 ];
 
@@ -264,6 +312,16 @@ const EPSILON = 1e-8;
 const SFC_MAX_WAM_DAYS = 60;
 const SFC_MAX_WAL_DAYS = 120;
 const SFC_MAX_BANK_CONCENTRATION_PCT = 25;
+const UNASSIGNED_BANK_ID = '__unassigned__';
+const EXCLUDED_BANK_SELECT_VALUE = '__excluded__';
+
+function amountTolerance(...values: number[]) {
+  const scale = Math.max(
+    1,
+    ...values.filter(Number.isFinite).map((value) => Math.abs(value)),
+  );
+  return scale * 1e-10;
+}
 
 function termValueError(
   value: number | null,
@@ -349,7 +407,72 @@ function postTradeExistingExposure(
   return currentExposure * (postAum / portfolio.aum);
 }
 
-function institutionExposureTotalError(portfolio: Portfolio, banks: Bank[]) {
+function aggregateInstitutionExposures(
+  banks: Bank[],
+  holdings: Holding[],
+): ModelBank[] {
+  const exposureByBank = new Map(banks.map((bank) => [bank.id, 0]));
+  holdings.forEach((holding) => {
+    if (holding.bankId === null || !exposureByBank.has(holding.bankId)) return;
+    exposureByBank.set(
+      holding.bankId,
+      (exposureByBank.get(holding.bankId) ?? 0) + holding.amount,
+    );
+  });
+  return banks.map((bank) => ({
+    ...bank,
+    currentExposure: exposureByBank.get(bank.id) ?? 0,
+  }));
+}
+
+function holdingValidationErrors(
+  portfolio: Portfolio,
+  banks: Bank[],
+  holdings: Holding[],
+) {
+  const errors: string[] = [];
+  const bankIds = new Set(banks.map((bank) => bank.id));
+
+  holdings.forEach((holding) => {
+    if (!holding.name.trim()) errors.push('持仓名称不能为空。');
+    if (!Number.isFinite(holding.amount) || holding.amount < 0) {
+      errors.push(`${holding.name || '某项持仓'}的当前金额必须是非负数字。`);
+    }
+    if (holding.bankId === UNASSIGNED_BANK_ID) {
+      errors.push(`${holding.name || '某项持仓'}尚未选择集中度归属机构。`);
+    } else if (holding.bankId !== null && !bankIds.has(holding.bankId)) {
+      errors.push(`${holding.name || '某项持仓'}对应的机构已不存在。`);
+    }
+  });
+
+  const amountsAreValid = holdings.every(
+    (holding) => Number.isFinite(holding.amount) && holding.amount >= 0,
+  );
+  if (amountsAreValid && Number.isFinite(portfolio.aum) && portfolio.aum >= 0) {
+    const holdingTotal = holdings.reduce(
+      (sum, holding) => sum + holding.amount,
+      0,
+    );
+    const tolerance = amountTolerance(holdingTotal, portfolio.aum);
+    const difference = holdingTotal - portfolio.aum;
+    if (difference > tolerance) {
+      errors.push(
+        `当前持仓合计（${number(holdingTotal, 8)}）比当前 AUM（${number(portfolio.aum, 8)}）超出 ${number(difference, 8)}；请调低或删除对应持仓。`,
+      );
+    } else if (difference < -tolerance) {
+      errors.push(
+        `当前持仓合计（${number(holdingTotal, 8)}）比当前 AUM（${number(portfolio.aum, 8)}）少 ${number(Math.abs(difference), 8)}；请补录持仓或计入现金及其他。`,
+      );
+    }
+  }
+
+  return [...new Set(errors)];
+}
+
+function institutionExposureTotalError(
+  portfolio: Portfolio,
+  banks: ModelBank[],
+) {
   if (
     !Number.isFinite(portfolio.aum) ||
     portfolio.aum < 0 ||
@@ -365,10 +488,104 @@ function institutionExposureTotalError(portfolio: Portfolio, banks: Bank[]) {
     (sum, bank) => sum + bank.currentExposure,
     0,
   );
-  if (totalExposure > portfolio.aum + EPSILON) {
+  if (
+    totalExposure >
+    portfolio.aum + amountTolerance(totalExposure, portfolio.aum)
+  ) {
     return `已录入机构的当前持仓合计（${number(totalExposure)}）不得超过当前 AUM（${number(portfolio.aum)}）。`;
   }
   return null;
+}
+
+function buildProRataHoldingOutcomes(
+  holdings: Holding[],
+  redemptionAmount: number,
+  aum: number,
+): HoldingOutcome[] {
+  if (
+    !Number.isFinite(aum) ||
+    aum <= 0 ||
+    !Number.isFinite(redemptionAmount) ||
+    redemptionAmount < 0 ||
+    holdings.some(
+      (holding) => !Number.isFinite(holding.amount) || holding.amount < 0,
+    )
+  ) {
+    return [];
+  }
+
+  const ratio = redemptionAmount / aum;
+  const outcomes = holdings.map((holding) => {
+    const redeemed = Math.min(
+      holding.amount,
+      Math.max(0, holding.amount * ratio),
+    );
+    return {
+      ...holding,
+      redeemed,
+      finalAmount: holding.amount - redeemed,
+    };
+  });
+  if (!outcomes.length) return outcomes;
+
+  let residual =
+    redemptionAmount -
+    outcomes.reduce((sum, holding) => sum + holding.redeemed, 0);
+  const adjustmentOrder = outcomes
+    .map((_, index) => index)
+    .sort(
+      (left, right) =>
+        (residual >= 0
+          ? outcomes[right].amount - outcomes[right].redeemed
+          : outcomes[right].redeemed) -
+        (residual >= 0
+          ? outcomes[left].amount - outcomes[left].redeemed
+          : outcomes[left].redeemed),
+    );
+
+  adjustmentOrder.forEach((index) => {
+    if (residual === 0) return;
+    const holding = outcomes[index];
+    const previousRedeemed = holding.redeemed;
+    const capacity =
+      residual > 0
+        ? Math.max(0, holding.amount - previousRedeemed)
+        : Math.max(0, previousRedeemed);
+    const requestedAdjustment =
+      residual > 0
+        ? Math.min(residual, capacity)
+        : -Math.min(-residual, capacity);
+    const redeemed = Math.min(
+      holding.amount,
+      Math.max(0, previousRedeemed + requestedAdjustment),
+    );
+    residual -= redeemed - previousRedeemed;
+    outcomes[index] = {
+      ...holding,
+      redeemed,
+      finalAmount: Math.max(0, holding.amount - redeemed),
+    };
+  });
+
+  if (
+    Math.abs(residual) >
+    amountTolerance(
+      aum,
+      redemptionAmount,
+      ...holdings.map(({ amount }) => amount),
+    )
+  ) {
+    return [];
+  }
+
+  return outcomes.map((holding) => {
+    const redeemed = Math.min(holding.amount, Math.max(0, holding.redeemed));
+    return {
+      ...holding,
+      redeemed,
+      finalAmount: Math.max(0, holding.amount - redeemed),
+    };
+  });
 }
 
 // Primal simplex for max c'x subject to Ax <= b, x >= 0.
@@ -443,7 +660,7 @@ function simplex(
 
 function optimiseSubscription(
   portfolio: Portfolio,
-  banks: Bank[],
+  banks: ModelBank[],
   quotes: Quote[],
 ): SubscriptionModelResult {
   const errors: string[] = [];
@@ -644,7 +861,8 @@ function optimiseSubscription(
 
 function calculateProRataRedemption(
   portfolio: Portfolio,
-  banks: Bank[],
+  banks: ModelBank[],
+  holdings: Holding[],
 ): ModelResult {
   const errors: string[] = [];
   const postAum = postAumOf(portfolio);
@@ -749,7 +967,51 @@ function calculateProRataRedemption(
     };
   }
 
-  const remainingFactor = postAum / portfolio.aum;
+  const holdingOutcomes = buildProRataHoldingOutcomes(
+    holdings,
+    portfolio.transactionAmount,
+    portfolio.aum,
+  );
+  const redeemedTotal = holdingOutcomes.reduce(
+    (sum, holding) => sum + holding.redeemed,
+    0,
+  );
+  const finalTotal = holdingOutcomes.reduce(
+    (sum, holding) => sum + holding.finalAmount,
+    0,
+  );
+  const outcomeTolerance = amountTolerance(
+    portfolio.aum,
+    postAum,
+    portfolio.transactionAmount,
+  );
+  if (
+    Math.abs(redeemedTotal - portfolio.transactionAmount) > outcomeTolerance ||
+    Math.abs(finalTotal - postAum) > outcomeTolerance ||
+    holdingOutcomes.some(
+      (holding) =>
+        holding.redeemed < -outcomeTolerance ||
+        holding.redeemed > holding.amount + outcomeTolerance ||
+        holding.finalAmount < -outcomeTolerance,
+    )
+  ) {
+    return {
+      ok: false,
+      tradeMode: 'redemption',
+      messages: ['逐项赎回金额未能稳定对账，请检查当前持仓金额。'],
+      postAum,
+    };
+  }
+  const finalExposureByBank = new Map(banks.map((bank) => [bank.id, 0]));
+  holdingOutcomes.forEach((holding) => {
+    if (holding.bankId === null || !finalExposureByBank.has(holding.bankId)) {
+      return;
+    }
+    finalExposureByBank.set(
+      holding.bankId,
+      (finalExposureByBank.get(holding.bankId) ?? 0) + holding.finalAmount,
+    );
+  });
   return {
     ok: true,
     tradeMode: 'redemption',
@@ -761,8 +1023,9 @@ function calculateProRataRedemption(
     postYtm: portfolio.ytm,
     postWam: portfolio.wam,
     postWal: portfolio.wal,
+    holdings: holdingOutcomes,
     banks: banks.map((bank) => {
-      const finalExposure = bank.currentExposure * remainingFactor;
+      const finalExposure = finalExposureByBank.get(bank.id) ?? 0;
       const finalCap = (postAum * bank.limitPct) / 100;
       return {
         ...bank,
@@ -777,11 +1040,21 @@ function calculateProRataRedemption(
 
 function calculatePlan(
   portfolio: Portfolio,
-  banks: Bank[],
+  banks: ModelBank[],
   quotes: Quote[],
+  holdings: Holding[],
 ): ModelResult {
+  const holdingErrors = holdingValidationErrors(portfolio, banks, holdings);
+  if (holdingErrors.length) {
+    return {
+      ok: false,
+      tradeMode: portfolio.tradeMode,
+      messages: holdingErrors,
+      postAum: postAumOf(portfolio),
+    };
+  }
   return portfolio.tradeMode === 'redemption'
-    ? calculateProRataRedemption(portfolio, banks)
+    ? calculateProRataRedemption(portfolio, banks, holdings)
     : optimiseSubscription(portfolio, banks, quotes);
 }
 
@@ -843,7 +1116,7 @@ function makeFrontierPoint(
 function buildFrontier(
   mode: FrontierMode,
   portfolio: Portfolio,
-  banks: Bank[],
+  banks: ModelBank[],
   quotes: Quote[],
 ): FrontierPoint[] {
   const postAum = portfolio.aum + portfolio.transactionAmount;
@@ -936,7 +1209,7 @@ function solveTargetYtm(
   mode: FrontierMode,
   targetYtm: number,
   portfolio: Portfolio,
-  banks: Bank[],
+  banks: ModelBank[],
   quotes: Quote[],
 ): ReverseYtmResult {
   const label = mode.toUpperCase();
@@ -1024,9 +1297,10 @@ function solveTargetYtm(
 
 function number(value: number, digits = 2) {
   if (!Number.isFinite(value)) return '—';
+  const normalizedValue = value === 0 ? 0 : value;
   return new Intl.NumberFormat('zh-CN', {
     maximumFractionDigits: digits,
-  }).format(value);
+  }).format(normalizedValue);
 }
 
 function percent(value: number, digits = 2) {
@@ -1084,7 +1358,7 @@ function parseNumericDraft(value: string) {
     return null;
   }
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return Number.isFinite(parsed) ? (parsed === 0 ? 0 : parsed) : null;
 }
 
 type EditableNumberInputProps = Omit<
@@ -1603,6 +1877,11 @@ const card =
 export default function Home() {
   const [portfolio, setPortfolio] = useState(initialPortfolio);
   const [banks, setBanks] = useState(initialBanks);
+  const [holdings, setHoldings] = useState(initialHoldings);
+  const modelBanks = useMemo(
+    () => aggregateInstitutionExposures(banks, holdings),
+    [banks, holdings],
+  );
   const [quotes, setQuotes] = useState(initialQuotes);
   const [bankLibrary, setBankLibrary] = useState(initialBankLibrary);
   const [bankLibraryLoaded, setBankLibraryLoaded] = useState(false);
@@ -1612,18 +1891,28 @@ export default function Home() {
   const [newBankLimitPct, setNewBankLimitPct] = useState(10);
   const [amountUnit, setAmountUnit] = useState<AmountUnit>('百万元');
   const [result, setResult] = useState<ModelResult>(() =>
-    calculatePlan(initialPortfolio, initialBanks, initialQuotes),
+    calculatePlan(
+      initialPortfolio,
+      aggregateInstitutionExposures(initialBanks, initialHoldings),
+      initialQuotes,
+      initialHoldings,
+    ),
   );
   const [dirty, setDirty] = useState(false);
   const [frontierMode, setFrontierMode] = useState<FrontierMode>('wam');
   const [targetYtm, setTargetYtm] = useState<number | null>(null);
   const [targetYtmError, setTargetYtmError] = useState<string | null>(null);
   const [targetYtmMessage, setTargetYtmMessage] = useState<string | null>(null);
-  const stateRef = useRef({ portfolio, banks, quotes });
+  const stateRef = useRef({
+    portfolio,
+    banks: modelBanks,
+    quotes,
+    holdings,
+  });
 
   useEffect(() => {
-    stateRef.current = { portfolio, banks, quotes };
-  }, [portfolio, banks, quotes]);
+    stateRef.current = { portfolio, banks: modelBanks, quotes, holdings };
+  }, [portfolio, modelBanks, quotes, holdings]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1667,7 +1956,7 @@ export default function Home() {
         name: 'calculate_current_mmf_allocation',
         title: '计算当前 MMF 配置',
         description:
-          '使用页面当前填写的组合、机构敞口、交易方向和报价，计算申购配置或同比例赎回影响。',
+          '使用页面当前填写的组合、当前持仓、机构上限、交易方向和报价，计算申购配置或同比例赎回影响。',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -1683,6 +1972,7 @@ export default function Home() {
             current.portfolio,
             current.banks,
             current.quotes,
+            current.holdings,
           );
           setResult(nextResult);
           setDirty(false);
@@ -1709,6 +1999,16 @@ export default function Home() {
                 redeemed: Math.abs(bank.transactionChange),
                 finalExposure: bank.finalExposure,
                 finalPct: bank.finalPct,
+              })),
+              holdings: nextResult.holdings.map((holding) => ({
+                product: holding.name,
+                institution:
+                  holding.bankId === null
+                    ? null
+                    : current.banks.find((bank) => bank.id === holding.bankId)
+                        ?.name,
+                redeemed: holding.redeemed,
+                finalAmount: holding.finalAmount,
               })),
             };
           }
@@ -1799,8 +2099,66 @@ export default function Home() {
   );
   const newBankLimitError = bankConcentrationError(newBankLimitPct);
   const newBankLimitNotice = bankConcentrationNotice(newBankLimitPct);
+  const holdingErrors = useMemo(
+    () => holdingValidationErrors(portfolio, banks, holdings),
+    [portfolio, banks, holdings],
+  );
+  const holdingNameInvalidIds = new Set(
+    holdings
+      .filter((holding) => !holding.name.trim())
+      .map((holding) => holding.id),
+  );
+  const holdingAmountInvalidIds = new Set(
+    holdings
+      .filter(
+        (holding) => !Number.isFinite(holding.amount) || holding.amount < 0,
+      )
+      .map((holding) => holding.id),
+  );
+  const bankIds = new Set(banks.map((bank) => bank.id));
+  const holdingBankInvalidIds = new Set(
+    holdings
+      .filter(
+        (holding) => holding.bankId !== null && !bankIds.has(holding.bankId),
+      )
+      .map((holding) => holding.id),
+  );
+  const holdingTotal = holdings.reduce(
+    (sum, holding) =>
+      sum + (Number.isFinite(holding.amount) ? holding.amount : 0),
+    0,
+  );
+  const holdingTotalError =
+    holdingErrors.find((message) => message.startsWith('当前持仓合计')) ?? null;
+  const holdingBalanceDifference = portfolio.aum - holdingTotal;
+  const canFillHoldingShortfall =
+    holdings.every(
+      (holding) => Number.isFinite(holding.amount) && holding.amount >= 0,
+    ) &&
+    Number.isFinite(portfolio.aum) &&
+    holdingBalanceDifference > amountTolerance(holdingTotal, portfolio.aum);
+  const previewRedemptionRatio =
+    isRedemption &&
+    holdingErrors.length === 0 &&
+    Number.isFinite(portfolio.aum) &&
+    portfolio.aum > 0 &&
+    Number.isFinite(portfolio.transactionAmount) &&
+    portfolio.transactionAmount >= 0 &&
+    portfolio.transactionAmount < portfolio.aum
+      ? portfolio.transactionAmount / portfolio.aum
+      : null;
+  const previewHoldingOutcomeById = new Map(
+    (previewRedemptionRatio === null
+      ? []
+      : buildProRataHoldingOutcomes(
+          holdings,
+          portfolio.transactionAmount,
+          portfolio.aum,
+        )
+    ).map((holding) => [holding.id, holding]),
+  );
   const bankExposureInvalidIds = new Set(
-    banks
+    modelBanks
       .filter(
         (bank) =>
           !Number.isFinite(bank.currentExposure) || bank.currentExposure < 0,
@@ -1808,7 +2166,7 @@ export default function Home() {
       .map((bank) => bank.id),
   );
   const currentBankExposureBreachIds = new Set(
-    banks
+    modelBanks
       .filter(
         (bank) =>
           Number.isFinite(portfolio.aum) &&
@@ -1823,7 +2181,7 @@ export default function Home() {
   const bankExposureBreachIds = isRedemption
     ? currentBankExposureBreachIds
     : new Set(
-        banks
+        modelBanks
           .filter(
             (bank) =>
               Number.isFinite(postAum) &&
@@ -1837,7 +2195,7 @@ export default function Home() {
       );
   const bankExposureTotalError = institutionExposureTotalError(
     portfolio,
-    banks,
+    modelBanks,
   );
   const hasRegulatoryLimitViolation = Boolean(
     currentWamInputError ||
@@ -1849,7 +2207,8 @@ export default function Home() {
     banks.some((bank) => bankConcentrationError(bank.limitPct)) ||
     bankExposureInvalidIds.size ||
     bankExposureBreachIds.size ||
-    bankExposureTotalError,
+    bankExposureTotalError ||
+    holdingErrors.length,
   );
   const availableBankTemplates = useMemo(
     () =>
@@ -1864,13 +2223,13 @@ export default function Home() {
   );
   const frontiers = useMemo(
     () =>
-      isRedemption
+      isRedemption || holdingErrors.length
         ? { wam: [], wal: [] }
         : {
-            wam: buildFrontier('wam', portfolio, banks, quotes),
-            wal: buildFrontier('wal', portfolio, banks, quotes),
+            wam: buildFrontier('wam', portfolio, modelBanks, quotes),
+            wal: buildFrontier('wal', portfolio, modelBanks, quotes),
           },
-    [portfolio, banks, quotes, isRedemption],
+    [portfolio, modelBanks, quotes, isRedemption, holdingErrors],
   );
   const clearTargetOutcome = () => {
     setTargetYtmError(null);
@@ -1888,6 +2247,56 @@ export default function Home() {
     setBanks((old) =>
       old.map((bank) => (bank.id === bankId ? { ...bank, ...patch } : bank)),
     );
+    setDirty(true);
+    clearTargetOutcome();
+  };
+  const updateHolding = (holdingId: string, patch: Partial<Holding>) => {
+    setHoldings((old) =>
+      old.map((holding) =>
+        holding.id === holdingId ? { ...holding, ...patch } : holding,
+      ),
+    );
+    setDirty(true);
+    clearTargetOutcome();
+  };
+  const addHolding = () => {
+    setHoldings((old) => [
+      ...old,
+      {
+        id: id('holding'),
+        name: '',
+        bankId: UNASSIGNED_BANK_ID,
+        amount: 0,
+      },
+    ]);
+    setDirty(true);
+    clearTargetOutcome();
+  };
+  const fillHoldingShortfall = () => {
+    if (!canFillHoldingShortfall) return;
+    setHoldings((old) => {
+      const otherIndex = old.findIndex((holding) => holding.isBalancing);
+      if (otherIndex < 0) {
+        return [
+          ...old,
+          {
+            id: id('holding-other'),
+            name: '现金及其他不计单一实体集中度资产',
+            bankId: null,
+            amount: holdingBalanceDifference,
+            isBalancing: true,
+          },
+        ];
+      }
+      return old.map((holding, index) =>
+        index === otherIndex
+          ? {
+              ...holding,
+              amount: holding.amount + holdingBalanceDifference,
+            }
+          : holding,
+      );
+    });
     setDirty(true);
     clearTargetOutcome();
   };
@@ -1911,7 +2320,6 @@ export default function Home() {
         id: id('today-bank'),
         templateId: template.id,
         name: template.name,
-        currentExposure: 0,
         limitPct: template.defaultLimitPct,
       },
     ]);
@@ -1951,14 +2359,14 @@ export default function Home() {
     setNewBankName('');
   };
   const calculate = () => {
-    setResult(calculatePlan(portfolio, banks, quotes));
+    setResult(calculatePlan(portfolio, modelBanks, quotes, holdings));
     setDirty(false);
     clearTargetOutcome();
   };
   const changeTradeMode = (tradeMode: TradeMode) => {
     const nextPortfolio = { ...portfolio, tradeMode };
     setPortfolio(nextPortfolio);
-    setResult(calculatePlan(nextPortfolio, banks, quotes));
+    setResult(calculatePlan(nextPortfolio, modelBanks, quotes, holdings));
     setDirty(false);
     setTargetYtm(null);
     clearTargetOutcome();
@@ -1966,26 +2374,34 @@ export default function Home() {
   const reset = () => {
     setPortfolio(initialPortfolio);
     setBanks(initialBanks);
+    setHoldings(initialHoldings);
     setQuotes(initialQuotes);
-    setResult(calculatePlan(initialPortfolio, initialBanks, initialQuotes));
+    setResult(
+      calculatePlan(
+        initialPortfolio,
+        aggregateInstitutionExposures(initialBanks, initialHoldings),
+        initialQuotes,
+        initialHoldings,
+      ),
+    );
     setDirty(false);
     setTargetYtm(null);
     setTargetYtmError(null);
     setTargetYtmMessage(null);
   };
   const selectFrontierDay = (mode: FrontierMode, day: number) => {
-    if (isRedemption) return;
+    if (isRedemption || holdingErrors.length) return;
     const nextPortfolio = {
       ...portfolio,
       ...(mode === 'wam' ? { maxWam: day } : { maxWal: day }),
     };
     setPortfolio(nextPortfolio);
-    setResult(optimiseSubscription(nextPortfolio, banks, quotes));
+    setResult(optimiseSubscription(nextPortfolio, modelBanks, quotes));
     setDirty(false);
     clearTargetOutcome();
   };
   const reverseTargetYtm = () => {
-    if (isRedemption) return;
+    if (isRedemption || holdingErrors.length) return;
     if (targetYtm === null || !Number.isFinite(targetYtm)) {
       setTargetYtmError('请输入有效的目标 YTM。');
       setTargetYtmMessage(null);
@@ -1996,7 +2412,7 @@ export default function Home() {
       frontierMode,
       targetYtm,
       portfolio,
-      banks,
+      modelBanks,
       quotes,
     );
     if (!solution.ok) {
@@ -2224,18 +2640,273 @@ export default function Home() {
           </section>
 
           <section className={card}>
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+              <div>
+                <p className="eyebrow">02 · 当前持仓</p>
+                <h2 className="mt-1 text-lg font-semibold">当前持仓明细</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  机构敞口从这里自动汇总；净赎回时按每项持仓同比例测算。
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant={holdingErrors.length ? 'destructive' : 'outline'}
+                >
+                  {holdingErrors.length
+                    ? `持仓数据需修正（${holdingErrors.length}）`
+                    : `已录入 ${number(holdingTotal)} / AUM ${number(portfolio.aum)} ${amountUnit}`}
+                </Badge>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={addHolding}
+                >
+                  <Plus /> 新增持仓
+                </Button>
+              </div>
+            </div>
+
+            {holdingTotalError ? (
+              <div className="border-b border-slate-100 px-5 py-4">
+                <Alert variant="destructive">
+                  <AlertTriangle />
+                  <div>
+                    <AlertTitle>{holdingTotalError}</AlertTitle>
+                    {canFillHoldingShortfall ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-3 border-red-300 bg-white text-red-800 hover:bg-red-50"
+                        onClick={fillHoldingShortfall}
+                      >
+                        用现金及其他补足（需确认不计入集中度）{' '}
+                        {number(holdingBalanceDifference, 8)} {amountUnit}
+                      </Button>
+                    ) : null}
+                  </div>
+                </Alert>
+              </div>
+            ) : null}
+
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
+                  <TableHead className="min-w-52 pl-5">资产 / 产品</TableHead>
+                  <TableHead className="min-w-52">集中度归属机构</TableHead>
+                  <TableHead className="min-w-32 text-right">
+                    当前金额
+                    <span className="block text-[11px] font-normal text-slate-400">
+                      绝对金额/{amountUnit}
+                    </span>
+                  </TableHead>
+                  {isRedemption ? (
+                    <>
+                      <TableHead className="min-w-32 text-right">
+                        预计赎回
+                        <span className="block text-[11px] font-normal text-slate-400">
+                          当前为同比例
+                        </span>
+                      </TableHead>
+                      <TableHead className="min-w-32 text-right">
+                        赎回后金额
+                        <span className="block text-[11px] font-normal text-slate-400">
+                          绝对金额/{amountUnit}
+                        </span>
+                      </TableHead>
+                    </>
+                  ) : null}
+                  <TableHead className="w-12" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {holdings.map((holding) => {
+                  const nameInvalid = holdingNameInvalidIds.has(holding.id);
+                  const amountInvalid = holdingAmountInvalidIds.has(holding.id);
+                  const bankInvalid = holdingBankInvalidIds.has(holding.id);
+                  const previewOutcome = previewHoldingOutcomeById.get(
+                    holding.id,
+                  );
+                  const redeemed = previewOutcome?.redeemed ?? Number.NaN;
+                  const finalAmount = previewOutcome?.finalAmount ?? Number.NaN;
+                  return (
+                    <TableRow key={holding.id}>
+                      <TableCell
+                        className={`min-w-52 pl-5 ${nameInvalid ? 'bg-red-50/90' : ''}`}
+                      >
+                        <div className="grid gap-1">
+                          <Input
+                            aria-label="持仓资产或产品名称"
+                            value={holding.name}
+                            aria-invalid={nameInvalid || undefined}
+                            className={
+                              nameInvalid
+                                ? 'border-red-300 bg-red-50 text-red-950'
+                                : 'bg-white'
+                            }
+                            onChange={(event) =>
+                              updateHolding(holding.id, {
+                                name: event.target.value,
+                              })
+                            }
+                          />
+                          {nameInvalid ? (
+                            <span
+                              role="alert"
+                              className="text-xs font-medium text-red-700"
+                            >
+                              请输入资产或产品名称。
+                            </span>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell
+                        className={`min-w-52 ${bankInvalid ? 'bg-red-50/90' : ''}`}
+                      >
+                        <div className="grid gap-1">
+                          <NativeSelect
+                            aria-label={`${holding.name || '某项持仓'}的集中度归属机构`}
+                            disabled={holding.isBalancing}
+                            value={
+                              holding.bankId === null
+                                ? EXCLUDED_BANK_SELECT_VALUE
+                                : holding.bankId
+                            }
+                            aria-invalid={bankInvalid || undefined}
+                            className={
+                              bankInvalid
+                                ? 'border-red-300 bg-red-50 text-red-950'
+                                : 'bg-white'
+                            }
+                            onChange={(event) =>
+                              updateHolding(holding.id, {
+                                bankId:
+                                  event.target.value ===
+                                  EXCLUDED_BANK_SELECT_VALUE
+                                    ? null
+                                    : event.target.value,
+                              })
+                            }
+                          >
+                            <NativeSelectOption value={UNASSIGNED_BANK_ID}>
+                              请选择归属机构
+                            </NativeSelectOption>
+                            <NativeSelectOption
+                              value={EXCLUDED_BANK_SELECT_VALUE}
+                            >
+                              无机构归属 / 不计入本工具统计（需确认）
+                            </NativeSelectOption>
+                            {banks.map((bank) => (
+                              <NativeSelectOption value={bank.id} key={bank.id}>
+                                {bank.name}
+                              </NativeSelectOption>
+                            ))}
+                          </NativeSelect>
+                          {holding.isBalancing ? (
+                            <span className="text-xs font-medium text-amber-700">
+                              自动补差专用行；明确不计入本工具的机构集中度统计。
+                            </span>
+                          ) : bankInvalid ? (
+                            <span
+                              role="alert"
+                              className="text-xs font-medium text-red-700"
+                            >
+                              请选择机构，或明确选择不计入统计。
+                            </span>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell
+                        className={`min-w-32 ${amountInvalid ? 'bg-red-50/90' : ''}`}
+                      >
+                        <div className="grid gap-1">
+                          <EditableNumberInput
+                            aria-label={`${holding.name || '某项持仓'}当前金额，单位${amountUnit}`}
+                            value={holding.amount}
+                            min={0}
+                            step="0.01"
+                            aria-invalid={amountInvalid || undefined}
+                            className={`text-right ${
+                              amountInvalid
+                                ? 'border-red-300 bg-red-50 text-red-950'
+                                : 'bg-white'
+                            }`}
+                            onValueChange={(value) =>
+                              updateHolding(holding.id, {
+                                amount: value ?? Number.NaN,
+                              })
+                            }
+                          />
+                          {amountInvalid ? (
+                            <span
+                              role="alert"
+                              className="text-right text-xs font-medium text-red-700"
+                            >
+                              请输入非负金额。
+                            </span>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      {isRedemption ? (
+                        <>
+                          <TableCell className="text-right font-semibold text-teal-700">
+                            {number(redeemed)} {amountUnit}
+                          </TableCell>
+                          <TableCell className="text-right font-medium text-slate-700">
+                            {number(finalAmount)} {amountUnit}
+                          </TableCell>
+                        </>
+                      ) : null}
+                      <TableCell>
+                        <Button
+                          type="button"
+                          aria-label={`删除${holding.name || '该项持仓'}`}
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => {
+                            setHoldings((old) =>
+                              old.filter((item) => item.id !== holding.id),
+                            );
+                            setDirty(true);
+                            clearTargetOutcome();
+                          }}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+                {!holdings.length ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={isRedemption ? 6 : 4}
+                      className="h-24 text-center text-sm text-slate-500"
+                    >
+                      还没有持仓。请新增持仓，并使金额合计与当前 AUM 一致。
+                    </TableCell>
+                  </TableRow>
+                ) : null}
+              </TableBody>
+            </Table>
+            <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
+              持仓金额合计必须等于当前 AUM。选择“无机构归属 /
+              不计入本工具统计”仅表示该行不占用下方单一机构额度，须由合规确认；普通机构持仓不得归入此项。窄屏可左右滑动查看完整字段。
+              {isRedemption
+                ? ' 当前显示的是同比例情景，不代表赎回优先级。'
+                : ''}
+            </p>
+          </section>
+
+          <section className={card}>
             <div className="section-head">
               <div>
-                <p className="eyebrow">02 · 机构敞口</p>
-                <h2 className="mt-1 text-lg font-semibold">
-                  {isRedemption
-                    ? '当前机构持仓与赎回后集中度'
-                    : '今日参与机构与集中度额度'}
-                </h2>
+                <p className="eyebrow">03 · 机构集中度</p>
+                <h2 className="mt-1 text-lg font-semibold">机构集中度汇总</h2>
               </div>
               <Badge variant="outline">
-                {isRedemption ? '当前' : '今日'} {banks.length} 家 · 备选库{' '}
-                {bankLibrary.length} 家
+                机构表 {banks.length} 家 · 备选库 {bankLibrary.length} 家
               </Badge>
             </div>
 
@@ -2247,9 +2918,7 @@ export default function Home() {
                       合作机构备选库
                     </p>
                     <p className="mt-0.5 text-xs text-slate-500">
-                      {isRedemption
-                        ? '选择后加入当前机构持仓名单'
-                        : '选择后加入今天的敞口与报价名单'}
+                      选择后可用于持仓归属和今日报价
                     </p>
                   </div>
                   <Badge variant="secondary">仅保存在本机</Badge>
@@ -2290,7 +2959,7 @@ export default function Home() {
                     }
                     onClick={addBankFromLibrary}
                   >
-                    <Plus /> {isRedemption ? '加入持仓' : '加入今日'}
+                    <Plus /> 加入机构表
                   </Button>
                 </div>
               </div>
@@ -2391,9 +3060,9 @@ export default function Home() {
                 <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
                   <TableHead className="pl-5">机构</TableHead>
                   <TableHead className="text-right">
-                    当前持仓
+                    当前机构敞口
                     <span className="block text-[11px] font-normal text-slate-400">
-                      绝对金额/{amountUnit}
+                      从持仓自动汇总/{amountUnit}
                     </span>
                   </TableHead>
                   <TableHead className="text-right">
@@ -2424,7 +3093,7 @@ export default function Home() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {banks.map((bank) => {
+                {modelBanks.map((bank) => {
                   const concentrationError = bankConcentrationError(
                     bank.limitPct,
                   );
@@ -2443,9 +3112,20 @@ export default function Home() {
                     0,
                     bank.currentExposure - postTradeExposure,
                   );
-                  const hasQuotes = quotes.some(
+                  const linkedQuoteCount = quotes.filter(
                     (quote) => quote.bankId === bank.id,
-                  );
+                  ).length;
+                  const hasQuotes = linkedQuoteCount > 0;
+                  const linkedHoldingCount = holdings.filter(
+                    (holding) => holding.bankId === bank.id,
+                  ).length;
+                  const hasHoldings = linkedHoldingCount > 0;
+                  const referenceSummary = [
+                    hasHoldings ? linkedHoldingCount + ' 项持仓' : null,
+                    hasQuotes ? linkedQuoteCount + ' 项报价' : null,
+                  ]
+                    .filter(Boolean)
+                    .join('和');
                   const exposureInvalid = bankExposureInvalidIds.has(bank.id);
                   const postTradeExposureBreach = bankExposureBreachIds.has(
                     bank.id,
@@ -2463,33 +3143,23 @@ export default function Home() {
                           {bank.name}
                         </p>
                         <p className="mt-0.5 text-xs text-slate-400">
-                          {isRedemption ? '当前持仓名单' : '今日名单'}
+                          {linkedHoldingCount} 项持仓 · {linkedQuoteCount}{' '}
+                          项报价
                         </p>
                       </TableCell>
                       <TableCell
                         className={`min-w-28 align-top ${exposureHighlight ? 'bg-red-50/90' : ''}`}
                       >
                         <div className="grid gap-1">
-                          <EditableNumberInput
-                            aria-label={`${bank.name}当前持仓绝对金额，单位${amountUnit}`}
-                            value={bank.currentExposure}
-                            min={0}
-                            step="0.01"
-                            onValueChange={(value) =>
-                              updateBank(bank.id, {
-                                currentExposure: value ?? Number.NaN,
-                              })
-                            }
-                            aria-invalid={exposureCellError || undefined}
-                            className={`text-right ${
-                              exposureHighlight
-                                ? 'border-red-300 bg-red-50 text-red-950'
-                                : ''
-                            }`}
-                          />
+                          <p className="text-right font-semibold tabular-nums text-slate-800">
+                            {number(bank.currentExposure)} {amountUnit}
+                          </p>
+                          <p className="text-right text-[11px] text-slate-400">
+                            由 {linkedHoldingCount} 项持仓自动汇总
+                          </p>
                           {exposureInvalid ? (
                             <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
-                              当前持仓必须是非负数字。
+                              请先修正对应持仓金额。
                             </span>
                           ) : postTradeExposureBreach ? (
                             <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
@@ -2574,17 +3244,17 @@ export default function Home() {
                       </TableCell>
                       <TableCell>
                         <Button
-                          aria-label={`将${bank.name}移出${isRedemption ? '当前持仓名单' : '今日名单'}`}
+                          aria-label={`将${bank.name}移出机构表`}
                           title={
-                            hasQuotes
-                              ? isRedemption
-                                ? '该机构仍有关联报价；请切换到净申购后先删除关联报价'
-                                : '请先删除该机构的今日报价'
-                              : `移出${isRedemption ? '当前持仓名单' : '今日名单'}，但保留在合作机构备选库`
+                            hasHoldings || hasQuotes
+                              ? '该机构仍被' +
+                                referenceSummary +
+                                '使用；请先改绑或删除关联记录'
+                              : '移出机构表，但保留在合作机构备选库'
                           }
                           variant="ghost"
                           size="icon-sm"
-                          disabled={hasQuotes}
+                          disabled={hasHoldings || hasQuotes}
                           onClick={() => {
                             setBanks((old) =>
                               old.filter((item) => item.id !== bank.id),
@@ -2599,15 +3269,13 @@ export default function Home() {
                     </TableRow>
                   );
                 })}
-                {!banks.length ? (
+                {!modelBanks.length ? (
                   <TableRow>
                     <TableCell
                       colSpan={7}
                       className="h-20 text-center text-sm text-slate-500"
                     >
-                      {isRedemption
-                        ? '请先从合作机构备选库加入当前持仓机构。'
-                        : '请先从合作机构备选库加入今天参与报价的机构。'}
+                      请先从合作机构备选库加入需要用于持仓或报价的机构。
                     </TableCell>
                   </TableRow>
                 ) : null}
@@ -2623,15 +3291,24 @@ export default function Home() {
                   </>
                 ) : (
                   <>
-                    当前占比 = 当前持仓 ÷ 当前 AUM；交易后额度上限 =（当前 AUM +
-                    新增待配置资金）× 集中度上限；本次最多可新增 =
-                    交易后额度上限 − 当前持仓。
+                    当前占比 = 当前机构敞口 ÷ 当前 AUM；交易后额度上限 =（当前
+                    AUM + 新增待配置资金）× 集中度上限；本次最多可新增 =
+                    交易后额度上限 − 当前机构敞口。
                   </>
                 )}
               </p>
-              {isRedemption && quotes.length ? (
+              {quotes.length ||
+              holdings.some(
+                (holding) =>
+                  holding.bankId !== null &&
+                  holding.bankId !== UNASSIGNED_BANK_ID &&
+                  bankIds.has(holding.bankId),
+              ) ? (
                 <p className="mt-1">
-                  净申购模式中的关联报价会保留；如需移除有关联报价的机构，请先切换到净申购并删除对应报价。
+                  被持仓或报价引用的机构不能直接移除；请先在上方持仓表改绑，并删除对应报价。
+                  {isRedemption
+                    ? ' 报价在本模式下隐藏，请切换到净申购后处理。'
+                    : ''}
                 </p>
               ) : null}
               <p className="mt-1">
@@ -2647,7 +3324,7 @@ export default function Home() {
             <div className="section-head">
               <div>
                 <p className="eyebrow">
-                  03 · {isRedemption ? '赎回规则' : '市场报价'}
+                  04 · {isRedemption ? '赎回规则' : '市场报价'}
                 </p>
                 <h2 className="mt-1 text-lg font-semibold">
                   {isRedemption ? '按现有组合同比例赎回' : '今日可投产品与报价'}
@@ -2695,7 +3372,7 @@ export default function Home() {
                     YTM、WAM、WAL 与机构占比保持不变。
                   </p>
                   <p className="mt-2 text-xs leading-5 text-slate-500">
-                    如果实际业务是优先使用现金、到期资产或指定产品，需在后续版本录入现有持仓明细后再优化赎回来源。
+                    上方持仓表会逐项列出预计赎回额和剩余金额；当前仍不判断赎回优先级。后续可在这张底表上增加产品级收益、期限和可赎回额度，再优化具体来源。
                   </p>
                 </div>
               </div>
@@ -2968,30 +3645,41 @@ export default function Home() {
                   role="tabpanel"
                   aria-labelledby={`${frontierMode}-frontier-tab`}
                 >
-                  <FrontierPanel
-                    mode={frontierMode}
-                    points={frontiers[frontierMode]}
-                    currentLimit={
-                      frontierMode === 'wam'
-                        ? portfolio.maxWam
-                        : portfolio.maxWal
-                    }
-                    otherLimit={
-                      frontierMode === 'wam'
-                        ? portfolio.maxWal
-                        : portfolio.maxWam
-                    }
-                    onSelect={(day) => selectFrontierDay(frontierMode, day)}
-                    targetYtm={targetYtm}
-                    targetYtmError={targetYtmError}
-                    targetYtmMessage={targetYtmMessage}
-                    onTargetYtmChange={(value) => {
-                      setTargetYtm(value);
-                      clearTargetOutcome();
-                    }}
-                    onSolveTarget={reverseTargetYtm}
-                    disabled={hasRegulatoryLimitViolation}
-                  />
+                  {holdingErrors.length ? (
+                    <div className="p-5">
+                      <Alert variant="destructive">
+                        <AlertTriangle />
+                        <AlertTitle>
+                          请先修正“当前持仓”中的名称、机构归属和金额，随后再生成收益前沿。
+                        </AlertTitle>
+                      </Alert>
+                    </div>
+                  ) : (
+                    <FrontierPanel
+                      mode={frontierMode}
+                      points={frontiers[frontierMode]}
+                      currentLimit={
+                        frontierMode === 'wam'
+                          ? portfolio.maxWam
+                          : portfolio.maxWal
+                      }
+                      otherLimit={
+                        frontierMode === 'wam'
+                          ? portfolio.maxWal
+                          : portfolio.maxWam
+                      }
+                      onSelect={(day) => selectFrontierDay(frontierMode, day)}
+                      targetYtm={targetYtm}
+                      targetYtmError={targetYtmError}
+                      targetYtmMessage={targetYtmMessage}
+                      onTargetYtmChange={(value) => {
+                        setTargetYtm(value);
+                        clearTargetOutcome();
+                      }}
+                      onSolveTarget={reverseTargetYtm}
+                      disabled={hasRegulatoryLimitViolation}
+                    />
+                  )}
                 </div>
               </div>
             )}
@@ -3166,14 +3854,47 @@ export default function Home() {
                     </div>
                   </>
                 ) : (
-                  <div className="border-t border-slate-100 px-5 py-4">
-                    <p className="text-sm font-semibold text-slate-800">
-                      按比例缩减现有持仓
-                    </p>
-                    <p className="mt-1 text-sm leading-6 text-slate-500">
-                      当前只有组合与机构级汇总数据，因此不生成产品级赎回顺序。下列为已录入机构敞口随组合缩减的影响；其余赎回来自未逐项录入的资产。
-                    </p>
-                  </div>
+                  <>
+                    <div className="border-t border-slate-100 px-5 py-4">
+                      <p className="text-sm font-semibold text-slate-800">
+                        按比例缩减当前持仓
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-slate-500">
+                        下列金额来自当前持仓底表，合计等于本次净赎回金额；这是同比例情景，不代表赎回优先级。
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-slate-400">
+                        明细按当前金额单位四舍五入展示，计算与合计使用未舍入数值。
+                      </p>
+                    </div>
+                    <div className="divide-y divide-slate-100 border-t border-slate-100">
+                      {result.holdings.map((holding) => (
+                        <div
+                          key={holding.id}
+                          className="flex flex-col gap-2 px-5 py-3 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-slate-800">
+                              {holding.name}
+                            </p>
+                            <p className="mt-0.5 text-xs text-slate-500">
+                              {holding.bankId === null
+                                ? '不计入单一实体集中度'
+                                : (bankNames.get(holding.bankId) ??
+                                  '机构待修正')}
+                            </p>
+                          </div>
+                          <div className="text-left sm:text-right">
+                            <p className="text-sm font-semibold tabular-nums text-teal-700">
+                              赎回 {number(holding.redeemed)} {amountUnit}
+                            </p>
+                            <p className="mt-0.5 text-xs text-slate-400">
+                              剩余 {number(holding.finalAmount)} {amountUnit}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
                 )}
 
                 <div className="border-t border-slate-100">
