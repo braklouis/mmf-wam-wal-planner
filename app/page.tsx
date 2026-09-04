@@ -53,6 +53,7 @@ import {
 } from '@/components/ui/table';
 
 type TradeMode = 'subscription' | 'redemption';
+type WorkspaceView = 'planner' | 'holdings';
 
 type Portfolio = {
   tradeMode: TradeMode;
@@ -1543,7 +1544,6 @@ function FrontierPanel({
   mode,
   points,
   currentLimit,
-  otherLimit,
   onSelect,
   targetYtm,
   targetYtmError,
@@ -1555,7 +1555,6 @@ function FrontierPanel({
   mode: FrontierMode;
   points: FrontierPoint[];
   currentLimit: number | null;
-  otherLimit: number | null;
   onSelect: (day: number) => void;
   targetYtm: number | null;
   targetYtmError: string | null;
@@ -1643,18 +1642,11 @@ function FrontierPanel({
 
   const first = points[0]!;
   const last = points[points.length - 1]!;
-  const gainBps = Math.max(0, (last.ytm - first.ytm) * 100);
   const plateau = points.find((point) => point.isPlateauStart) ?? last;
   const hasPlateau = plateau.day < last.day - 0.001;
-  const plateauReasons = plateau.bindingConstraints.filter(
-    (constraint) => !constraint.startsWith(label),
-  );
-  const plateauReasonText = plateauReasons.length
-    ? plateauReasons.join('、')
-    : '当前可投报价本身的收益上限';
 
   return (
-    <div className="grid gap-5 p-5">
+    <div className="p-5">
       <div className="min-w-0">
         <ChartContainer
           config={frontierChartConfig}
@@ -1800,73 +1792,6 @@ function FrontierPanel({
         </p>
         {targetControl}
       </div>
-
-      <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-        <p className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-          曲线读法
-        </p>
-        <p className="mt-2 text-sm leading-6 text-slate-600">
-          {mode === 'wam'
-            ? 'WAM 衡量利率重定价敏感度；浮息工具可使用较短的获认可重定价天数，但仍会消耗 WAL。'
-            : 'WAL 按最终本金到期计量；利率重定价不会在本模型中缩短 WAL。'}
-        </p>
-        <div className="mt-3 rounded-xl border border-yellow-200 bg-yellow-50 p-3">
-          <p className="text-sm font-semibold text-slate-900">
-            {hasPlateau ? '为什么之后不再增加？' : '尚未达到最大 YTM'}
-          </p>
-          <p className="mt-1 text-sm leading-6 text-slate-700">
-            {hasPlateau ? (
-              <>
-                按当前数值精度，约 {number(plateau.day)} 天起，最优配置的实际{' '}
-                {label} 已固定在{' '}
-                {number(mode === 'wam' ? plateau.wam : plateau.wal)}{' '}
-                天。继续提高 {label}{' '}
-                上限只会增加未使用的期限空间，并不会找到更高收益的合规配置。最大
-                YTM 配置触及的其他边界包括：
-                {plateauReasonText}。
-              </>
-            ) : (
-              <>
-                在当前展示区间内，放宽 {label} 仍能提高最高收益，尚未达到最大
-                YTM；曲线止于 SFC {label} ≤{' '}
-                {mode === 'wam' ? SFC_MAX_WAM_DAYS : SFC_MAX_WAL_DAYS}{' '}
-                天的硬上限。
-              </>
-            )}
-          </p>
-        </div>
-        <dl className="mt-4 grid gap-3 border-t border-slate-200 pt-4 text-sm sm:grid-cols-2">
-          <div className="flex justify-between gap-3">
-            <dt className="text-slate-500">展示区间</dt>
-            <dd className="font-medium">
-              {first.day}–{last.day} 天
-            </dd>
-          </div>
-          <div className="flex justify-between gap-3">
-            <dt className="text-slate-500">区间收益差</dt>
-            <dd className="font-medium text-teal-700">
-              +{number(gainBps, 1)} bp
-            </dd>
-          </div>
-          <div className="flex justify-between gap-3">
-            <dt className="text-slate-500">最大 YTM 起点</dt>
-            <dd className="font-medium">
-              {hasPlateau
-                ? `数值精度内约 ${number(plateau.day)} 天起`
-                : '展示区间内未达到'}
-            </dd>
-          </div>
-          <div className="flex justify-between gap-3">
-            <dt className="text-slate-500">另一约束</dt>
-            <dd className="text-right font-medium">
-              {mode === 'wam' ? 'WAL' : 'WAM'}{' '}
-              {otherLimit === null
-                ? `仅 SFC ≤ ${mode === 'wam' ? SFC_MAX_WAL_DAYS : SFC_MAX_WAM_DAYS} 天`
-                : `≤ ${number(otherLimit)} 天`}
-            </dd>
-          </div>
-        </dl>
-      </div>
     </div>
   );
 }
@@ -1875,6 +1800,7 @@ const card =
   'rounded-2xl border border-slate-200 bg-white shadow-[0_8px_30px_rgba(15,23,42,0.04)]';
 
 export default function Home() {
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('planner');
   const [portfolio, setPortfolio] = useState(initialPortfolio);
   const [banks, setBanks] = useState(initialBanks);
   const [holdings, setHoldings] = useState(initialHoldings);
@@ -2197,6 +2123,13 @@ export default function Home() {
     portfolio,
     modelBanks,
   );
+  const hasHoldingsWorkspaceViolation = Boolean(
+    banks.some((bank) => bankConcentrationError(bank.limitPct)) ||
+    bankExposureInvalidIds.size ||
+    bankExposureBreachIds.size ||
+    bankExposureTotalError ||
+    holdingErrors.length,
+  );
   const hasRegulatoryLimitViolation = Boolean(
     currentWamInputError ||
     currentWalInputError ||
@@ -2204,11 +2137,7 @@ export default function Home() {
     transactionAmountError ||
     maxWamError ||
     maxWalError ||
-    banks.some((bank) => bankConcentrationError(bank.limitPct)) ||
-    bankExposureInvalidIds.size ||
-    bankExposureBreachIds.size ||
-    bankExposureTotalError ||
-    holdingErrors.length,
+    hasHoldingsWorkspaceViolation,
   );
   const availableBankTemplates = useMemo(
     () =>
@@ -2223,13 +2152,19 @@ export default function Home() {
   );
   const frontiers = useMemo(
     () =>
-      isRedemption || holdingErrors.length
+      isRedemption || hasHoldingsWorkspaceViolation
         ? { wam: [], wal: [] }
         : {
             wam: buildFrontier('wam', portfolio, modelBanks, quotes),
             wal: buildFrontier('wal', portfolio, modelBanks, quotes),
           },
-    [portfolio, modelBanks, quotes, isRedemption, holdingErrors],
+    [
+      portfolio,
+      modelBanks,
+      quotes,
+      isRedemption,
+      hasHoldingsWorkspaceViolation,
+    ],
   );
   const clearTargetOutcome = () => {
     setTargetYtmError(null);
@@ -2454,9 +2389,11 @@ export default function Home() {
                 </Badge>
               </div>
               <p className="mt-0.5 text-sm text-slate-300">
-                {isRedemption
-                  ? '测算同比例赎回后的组合与机构敞口'
-                  : '在期限与机构集中度约束内，寻找最高收益配置'}
+                {workspaceView === 'holdings'
+                  ? '集中维护持仓、机构归属与集中度上限'
+                  : isRedemption
+                    ? '测算同比例赎回后的组合与机构敞口'
+                    : '在期限与机构集中度约束内，寻找最高收益配置'}
               </p>
             </div>
           </div>
@@ -2471,923 +2408,734 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1540px] gap-6 px-4 py-6 sm:px-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(560px,0.85fr)] lg:px-8">
+      <nav
+        aria-label="配置台工作区"
+        className="border-b border-slate-200 bg-white"
+      >
+        <div className="mx-auto flex max-w-[1540px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
+          <div className="inline-flex rounded-xl bg-slate-100 p-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-pressed={workspaceView === 'planner'}
+              className={
+                workspaceView === 'planner'
+                  ? 'bg-white text-slate-950 shadow-sm hover:bg-white'
+                  : 'text-slate-500 hover:text-slate-900'
+              }
+              onClick={() => setWorkspaceView('planner')}
+            >
+              <Calculator /> 配置测算
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-pressed={workspaceView === 'holdings'}
+              className={
+                workspaceView === 'holdings'
+                  ? 'bg-white text-slate-950 shadow-sm hover:bg-white'
+                  : 'text-slate-500 hover:text-slate-900'
+              }
+              onClick={() => setWorkspaceView('holdings')}
+            >
+              <Landmark /> 当前持仓与机构
+              {hasHoldingsWorkspaceViolation ? (
+                <span className="grid min-w-5 place-items-center rounded-full bg-red-100 px-1 text-[11px] font-semibold text-red-700">
+                  {holdingErrors.length || '!'}
+                </span>
+              ) : null}
+            </Button>
+          </div>
+          <p className="text-xs text-slate-500">
+            {workspaceView === 'holdings'
+              ? '持仓、合作机构库及集中度设置在此统一维护'
+              : '组合参数、市场报价与优化结果'}
+          </p>
+        </div>
+      </nav>
+
+      <div
+        className={`mx-auto max-w-[1540px] gap-6 px-4 py-6 sm:px-6 lg:px-8 ${
+          workspaceView === 'planner'
+            ? 'grid xl:grid-cols-[minmax(0,1.15fr)_minmax(560px,0.85fr)]'
+            : 'block'
+        }`}
+      >
         <div className="space-y-5">
-          <section className={card}>
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
-              <div>
-                <p className="eyebrow">01 · 组合参数</p>
-                <h2 className="mt-1 text-lg font-semibold">当前组合与目标</h2>
+          {workspaceView === 'planner' ? (
+            <section className={card}>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+                <div>
+                  <p className="eyebrow">01 · 组合参数</p>
+                  <h2 className="mt-1 text-lg font-semibold">当前组合与目标</h2>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 text-xs text-slate-500">
+                    统一金额单位
+                    <NativeSelect
+                      aria-label="统一金额单位"
+                      size="sm"
+                      value={amountUnit}
+                      onChange={(event) =>
+                        setAmountUnit(event.target.value as AmountUnit)
+                      }
+                      className="w-24"
+                    >
+                      {(['元', '万元', '百万元', '亿元'] as const).map(
+                        (unit) => (
+                          <NativeSelectOption value={unit} key={unit}>
+                            {unit}
+                          </NativeSelectOption>
+                        ),
+                      )}
+                    </NativeSelect>
+                  </label>
+                  <Badge variant="outline">
+                    交易后 AUM {number(postAum)} {amountUnit}
+                  </Badge>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <label className="flex items-center gap-2 text-xs text-slate-500">
-                  统一金额单位
-                  <NativeSelect
-                    aria-label="统一金额单位"
-                    size="sm"
-                    value={amountUnit}
-                    onChange={(event) =>
-                      setAmountUnit(event.target.value as AmountUnit)
-                    }
-                    className="w-24"
-                  >
-                    {(['元', '万元', '百万元', '亿元'] as const).map((unit) => (
-                      <NativeSelectOption value={unit} key={unit}>
-                        {unit}
-                      </NativeSelectOption>
-                    ))}
-                  </NativeSelect>
-                </label>
-                <Badge variant="outline">
-                  交易后 AUM {number(postAum)} {amountUnit}
-                </Badge>
+              <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50/70 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-slate-800">
+                    今日资金方向
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {isRedemption
+                      ? '第一版按当前组合所有资产同比例赎回'
+                      : '将新增资金配置到今日可投产品'}
+                  </p>
+                </div>
+                <fieldset className="grid w-full grid-cols-2 rounded-xl bg-slate-200/70 p-1 sm:w-auto">
+                  <legend className="sr-only">选择今日资金方向</legend>
+                  {(
+                    [
+                      ['subscription', '净申购'],
+                      ['redemption', '净赎回'],
+                    ] as const
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={portfolio.tradeMode === mode}
+                      onClick={() => changeTradeMode(mode)}
+                      className={`rounded-lg px-5 py-2 text-sm font-semibold transition-colors ${
+                        portfolio.tradeMode === mode
+                          ? 'bg-white text-slate-950 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </fieldset>
               </div>
-            </div>
-            <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50/70 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-semibold text-slate-800">
-                  今日资金方向
-                </p>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  {isRedemption
-                    ? '第一版按当前组合所有资产同比例赎回'
-                    : '将新增资金配置到今日可投产品'}
-                </p>
+              <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
+                <NumberField
+                  label="当前 AUM（绝对金额）"
+                  value={portfolio.aum}
+                  suffix={amountUnit}
+                  min={0}
+                  error={aumInputError}
+                  onChange={(value) =>
+                    updatePortfolio('aum', value ?? Number.NaN)
+                  }
+                />
+                <NumberField
+                  label={
+                    isRedemption
+                      ? '净赎回金额（绝对金额）'
+                      : '新增待配置资金（绝对金额）'
+                  }
+                  value={portfolio.transactionAmount}
+                  suffix={amountUnit}
+                  min={0}
+                  max={
+                    isRedemption && Number.isFinite(portfolio.aum)
+                      ? Math.max(0, portfolio.aum - EPSILON)
+                      : undefined
+                  }
+                  error={transactionAmountError}
+                  onChange={(value) =>
+                    updatePortfolio('transactionAmount', value ?? Number.NaN)
+                  }
+                />
+                <NumberField
+                  label="当前 YTM"
+                  value={portfolio.ytm}
+                  suffix="%"
+                  onChange={(value) =>
+                    updatePortfolio('ytm', value ?? Number.NaN)
+                  }
+                />
+                <NumberField
+                  label="当前 WAM"
+                  value={portfolio.wam}
+                  suffix="天"
+                  min={0}
+                  error={currentWamInputError}
+                  warning={currentWamWarning}
+                  warningTone="red"
+                  onChange={(value) =>
+                    updatePortfolio('wam', value ?? Number.NaN)
+                  }
+                />
+                <NumberField
+                  label="当前 WAL"
+                  value={portfolio.wal}
+                  suffix="天"
+                  min={0}
+                  error={currentWalInputError}
+                  warning={currentWalWarning}
+                  warningTone="red"
+                  onChange={(value) =>
+                    updatePortfolio('wal', value ?? Number.NaN)
+                  }
+                />
+                <NumberField
+                  label={isRedemption ? 'WAM 上限（合规检验）' : 'WAM 上限'}
+                  value={portfolio.maxWam}
+                  suffix="天"
+                  optional
+                  min={0}
+                  max={SFC_MAX_WAM_DAYS}
+                  error={maxWamError}
+                  onChange={(value) => updatePortfolio('maxWam', value)}
+                />
+                <NumberField
+                  label={isRedemption ? 'WAL 上限（合规检验）' : 'WAL 上限'}
+                  value={portfolio.maxWal}
+                  suffix="天"
+                  optional
+                  min={0}
+                  max={SFC_MAX_WAL_DAYS}
+                  error={maxWalError}
+                  onChange={(value) => updatePortfolio('maxWal', value)}
+                />
               </div>
-              <fieldset className="grid w-full grid-cols-2 rounded-xl bg-slate-200/70 p-1 sm:w-auto">
-                <legend className="sr-only">选择今日资金方向</legend>
-                {(
-                  [
-                    ['subscription', '净申购'],
-                    ['redemption', '净赎回'],
-                  ] as const
-                ).map(([mode, label]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    aria-pressed={portfolio.tradeMode === mode}
-                    onClick={() => changeTradeMode(mode)}
-                    className={`rounded-lg px-5 py-2 text-sm font-semibold transition-colors ${
-                      portfolio.tradeMode === mode
-                        ? 'bg-white text-slate-950 shadow-sm'
-                        : 'text-slate-500 hover:text-slate-800'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </fieldset>
-            </div>
-            <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
-              <NumberField
-                label="当前 AUM（绝对金额）"
-                value={portfolio.aum}
-                suffix={amountUnit}
-                min={0}
-                error={aumInputError}
-                onChange={(value) =>
-                  updatePortfolio('aum', value ?? Number.NaN)
-                }
-              />
-              <NumberField
-                label={
-                  isRedemption
-                    ? '净赎回金额（绝对金额）'
-                    : '新增待配置资金（绝对金额）'
-                }
-                value={portfolio.transactionAmount}
-                suffix={amountUnit}
-                min={0}
-                max={
-                  isRedemption && Number.isFinite(portfolio.aum)
-                    ? Math.max(0, portfolio.aum - EPSILON)
-                    : undefined
-                }
-                error={transactionAmountError}
-                onChange={(value) =>
-                  updatePortfolio('transactionAmount', value ?? Number.NaN)
-                }
-              />
-              <NumberField
-                label="当前 YTM"
-                value={portfolio.ytm}
-                suffix="%"
-                onChange={(value) =>
-                  updatePortfolio('ytm', value ?? Number.NaN)
-                }
-              />
-              <NumberField
-                label="当前 WAM"
-                value={portfolio.wam}
-                suffix="天"
-                min={0}
-                error={currentWamInputError}
-                warning={currentWamWarning}
-                warningTone="red"
-                onChange={(value) =>
-                  updatePortfolio('wam', value ?? Number.NaN)
-                }
-              />
-              <NumberField
-                label="当前 WAL"
-                value={portfolio.wal}
-                suffix="天"
-                min={0}
-                error={currentWalInputError}
-                warning={currentWalWarning}
-                warningTone="red"
-                onChange={(value) =>
-                  updatePortfolio('wal', value ?? Number.NaN)
-                }
-              />
-              <NumberField
-                label={isRedemption ? 'WAM 上限（合规检验）' : 'WAM 上限'}
-                value={portfolio.maxWam}
-                suffix="天"
-                optional
-                min={0}
-                max={SFC_MAX_WAM_DAYS}
-                error={maxWamError}
-                onChange={(value) => updatePortfolio('maxWam', value)}
-              />
-              <NumberField
-                label={isRedemption ? 'WAL 上限（合规检验）' : 'WAL 上限'}
-                value={portfolio.maxWal}
-                suffix="天"
-                optional
-                min={0}
-                max={SFC_MAX_WAL_DAYS}
-                error={maxWalError}
-                onChange={(value) => updatePortfolio('maxWal', value)}
-              />
-            </div>
-            <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
-              {isRedemption ? (
-                <>
-                  所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM −
-                  净赎回金额。当前版本假设所有资产及机构敞口按相同比例缩减，因此
-                  YTM、WAM、WAL 与机构占比保持不变；已有超限也不会被修复。
-                </>
-              ) : (
-                <>
-                  所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM +
-                  新增待配置资金；新增资金尚未包含在当前 AUM 中。当前 WAM/WAL
-                  是事实快照，超标时仍可录入以测算修复方案；目标留空时仍自动执行
-                  SFC 监管上限 WAM 60 天、WAL 120 天。
-                </>
-              )}
-            </p>
-          </section>
-
-          <section className={card}>
-            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
-              <div>
-                <p className="eyebrow">02 · 当前持仓</p>
-                <h2 className="mt-1 text-lg font-semibold">当前持仓明细</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  机构敞口从这里自动汇总；净赎回时按每项持仓同比例测算。
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge
-                  variant={holdingErrors.length ? 'destructive' : 'outline'}
-                >
-                  {holdingErrors.length
-                    ? `持仓数据需修正（${holdingErrors.length}）`
-                    : `已录入 ${number(holdingTotal)} / AUM ${number(portfolio.aum)} ${amountUnit}`}
-                </Badge>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={addHolding}
-                >
-                  <Plus /> 新增持仓
-                </Button>
-              </div>
-            </div>
-
-            {holdingTotalError ? (
-              <div className="border-b border-slate-100 px-5 py-4">
-                <Alert variant="destructive">
-                  <AlertTriangle />
+              <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
+                {isRedemption ? (
+                  <>
+                    所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM
+                    −
+                    净赎回金额。当前版本假设所有资产及机构敞口按相同比例缩减，因此
+                    YTM、WAM、WAL 与机构占比保持不变；已有超限也不会被修复。
+                  </>
+                ) : (
+                  <>
+                    所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM
+                    + 新增待配置资金；新增资金尚未包含在当前 AUM 中。当前
+                    WAM/WAL
+                    是事实快照，超标时仍可录入以测算修复方案；目标留空时仍自动执行
+                    SFC 监管上限 WAM 60 天、WAL 120 天。
+                  </>
+                )}
+              </p>
+            </section>
+          ) : (
+            <>
+              <section className={card}>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
                   <div>
-                    <AlertTitle>{holdingTotalError}</AlertTitle>
-                    {canFillHoldingShortfall ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="mt-3 border-red-300 bg-white text-red-800 hover:bg-red-50"
-                        onClick={fillHoldingShortfall}
-                      >
-                        用现金及其他补足（需确认不计入集中度）{' '}
-                        {number(holdingBalanceDifference, 8)} {amountUnit}
-                      </Button>
-                    ) : null}
+                    <p className="eyebrow">持仓工作区</p>
+                    <h2 className="mt-1 text-lg font-semibold">当前口径</h2>
                   </div>
-                </Alert>
-              </div>
-            ) : null}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setWorkspaceView('planner')}
+                  >
+                    修改组合参数 <ArrowRight />
+                  </Button>
+                </div>
+                <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-4">
+                  <Metric
+                    label="当前 AUM"
+                    value={`${number(portfolio.aum)} ${amountUnit}`}
+                    detail="持仓金额需与此口径对账"
+                  />
+                  <Metric
+                    label="持仓合计"
+                    value={`${number(holdingTotal)} ${amountUnit}`}
+                    detail={
+                      holdingTotalError ? '尚未完成对账' : '已与 AUM 对账'
+                    }
+                    accent={!holdingTotalError}
+                  />
+                  <Metric
+                    label="当前交易方向"
+                    value={isRedemption ? '净赎回' : '净申购'}
+                    detail="交易方向在配置测算界面修改"
+                  />
+                  <Metric
+                    label={isRedemption ? '净赎回金额' : '新增资金'}
+                    value={`${number(portfolio.transactionAmount)} ${amountUnit}`}
+                    detail="用于预览交易后的机构集中度"
+                  />
+                </div>
+              </section>
 
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
-                  <TableHead className="min-w-52 pl-5">资产 / 产品</TableHead>
-                  <TableHead className="min-w-52">集中度归属机构</TableHead>
-                  <TableHead className="min-w-32 text-right">
-                    当前金额
-                    <span className="block text-[11px] font-normal text-slate-400">
-                      绝对金额/{amountUnit}
-                    </span>
-                  </TableHead>
-                  {isRedemption ? (
-                    <>
-                      <TableHead className="min-w-32 text-right">
-                        预计赎回
-                        <span className="block text-[11px] font-normal text-slate-400">
-                          当前为同比例
-                        </span>
+              <section className={card}>
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+                  <div>
+                    <p className="eyebrow">01 · 当前持仓</p>
+                    <h2 className="mt-1 text-lg font-semibold">当前持仓明细</h2>
+                    <p className="mt-1 text-sm text-slate-500">
+                      机构敞口从这里自动汇总；净赎回时按每项持仓同比例测算。
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      variant={holdingErrors.length ? 'destructive' : 'outline'}
+                    >
+                      {holdingErrors.length
+                        ? `持仓数据需修正（${holdingErrors.length}）`
+                        : `已录入 ${number(holdingTotal)} / AUM ${number(portfolio.aum)} ${amountUnit}`}
+                    </Badge>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={addHolding}
+                    >
+                      <Plus /> 新增持仓
+                    </Button>
+                  </div>
+                </div>
+
+                {holdingTotalError ? (
+                  <div className="border-b border-slate-100 px-5 py-4">
+                    <Alert variant="destructive">
+                      <AlertTriangle />
+                      <div>
+                        <AlertTitle>{holdingTotalError}</AlertTitle>
+                        {canFillHoldingShortfall ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="mt-3 border-red-300 bg-white text-red-800 hover:bg-red-50"
+                            onClick={fillHoldingShortfall}
+                          >
+                            用现金及其他补足（需确认不计入集中度）{' '}
+                            {number(holdingBalanceDifference, 8)} {amountUnit}
+                          </Button>
+                        ) : null}
+                      </div>
+                    </Alert>
+                  </div>
+                ) : null}
+
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
+                      <TableHead className="min-w-52 pl-5">
+                        资产 / 产品
                       </TableHead>
+                      <TableHead className="min-w-52">集中度归属机构</TableHead>
                       <TableHead className="min-w-32 text-right">
-                        赎回后金额
+                        当前金额
                         <span className="block text-[11px] font-normal text-slate-400">
                           绝对金额/{amountUnit}
                         </span>
                       </TableHead>
-                    </>
-                  ) : null}
-                  <TableHead className="w-12" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {holdings.map((holding) => {
-                  const nameInvalid = holdingNameInvalidIds.has(holding.id);
-                  const amountInvalid = holdingAmountInvalidIds.has(holding.id);
-                  const bankInvalid = holdingBankInvalidIds.has(holding.id);
-                  const previewOutcome = previewHoldingOutcomeById.get(
-                    holding.id,
-                  );
-                  const redeemed = previewOutcome?.redeemed ?? Number.NaN;
-                  const finalAmount = previewOutcome?.finalAmount ?? Number.NaN;
-                  return (
-                    <TableRow key={holding.id}>
-                      <TableCell
-                        className={`min-w-52 pl-5 ${nameInvalid ? 'bg-red-50/90' : ''}`}
-                      >
-                        <div className="grid gap-1">
-                          <Input
-                            aria-label="持仓资产或产品名称"
-                            value={holding.name}
-                            aria-invalid={nameInvalid || undefined}
-                            className={
-                              nameInvalid
-                                ? 'border-red-300 bg-red-50 text-red-950'
-                                : 'bg-white'
-                            }
-                            onChange={(event) =>
-                              updateHolding(holding.id, {
-                                name: event.target.value,
-                              })
-                            }
-                          />
-                          {nameInvalid ? (
-                            <span
-                              role="alert"
-                              className="text-xs font-medium text-red-700"
-                            >
-                              请输入资产或产品名称。
-                            </span>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell
-                        className={`min-w-52 ${bankInvalid ? 'bg-red-50/90' : ''}`}
-                      >
-                        <div className="grid gap-1">
-                          <NativeSelect
-                            aria-label={`${holding.name || '某项持仓'}的集中度归属机构`}
-                            disabled={holding.isBalancing}
-                            value={
-                              holding.bankId === null
-                                ? EXCLUDED_BANK_SELECT_VALUE
-                                : holding.bankId
-                            }
-                            aria-invalid={bankInvalid || undefined}
-                            className={
-                              bankInvalid
-                                ? 'border-red-300 bg-red-50 text-red-950'
-                                : 'bg-white'
-                            }
-                            onChange={(event) =>
-                              updateHolding(holding.id, {
-                                bankId:
-                                  event.target.value ===
-                                  EXCLUDED_BANK_SELECT_VALUE
-                                    ? null
-                                    : event.target.value,
-                              })
-                            }
-                          >
-                            <NativeSelectOption value={UNASSIGNED_BANK_ID}>
-                              请选择归属机构
-                            </NativeSelectOption>
-                            <NativeSelectOption
-                              value={EXCLUDED_BANK_SELECT_VALUE}
-                            >
-                              无机构归属 / 不计入本工具统计（需确认）
-                            </NativeSelectOption>
-                            {banks.map((bank) => (
-                              <NativeSelectOption value={bank.id} key={bank.id}>
-                                {bank.name}
-                              </NativeSelectOption>
-                            ))}
-                          </NativeSelect>
-                          {holding.isBalancing ? (
-                            <span className="text-xs font-medium text-amber-700">
-                              自动补差专用行；明确不计入本工具的机构集中度统计。
-                            </span>
-                          ) : bankInvalid ? (
-                            <span
-                              role="alert"
-                              className="text-xs font-medium text-red-700"
-                            >
-                              请选择机构，或明确选择不计入统计。
-                            </span>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell
-                        className={`min-w-32 ${amountInvalid ? 'bg-red-50/90' : ''}`}
-                      >
-                        <div className="grid gap-1">
-                          <EditableNumberInput
-                            aria-label={`${holding.name || '某项持仓'}当前金额，单位${amountUnit}`}
-                            value={holding.amount}
-                            min={0}
-                            step="0.01"
-                            aria-invalid={amountInvalid || undefined}
-                            className={`text-right ${
-                              amountInvalid
-                                ? 'border-red-300 bg-red-50 text-red-950'
-                                : 'bg-white'
-                            }`}
-                            onValueChange={(value) =>
-                              updateHolding(holding.id, {
-                                amount: value ?? Number.NaN,
-                              })
-                            }
-                          />
-                          {amountInvalid ? (
-                            <span
-                              role="alert"
-                              className="text-right text-xs font-medium text-red-700"
-                            >
-                              请输入非负金额。
-                            </span>
-                          ) : null}
-                        </div>
-                      </TableCell>
                       {isRedemption ? (
                         <>
-                          <TableCell className="text-right font-semibold text-teal-700">
-                            {number(redeemed)} {amountUnit}
-                          </TableCell>
-                          <TableCell className="text-right font-medium text-slate-700">
-                            {number(finalAmount)} {amountUnit}
-                          </TableCell>
+                          <TableHead className="min-w-32 text-right">
+                            预计赎回
+                            <span className="block text-[11px] font-normal text-slate-400">
+                              当前为同比例
+                            </span>
+                          </TableHead>
+                          <TableHead className="min-w-32 text-right">
+                            赎回后金额
+                            <span className="block text-[11px] font-normal text-slate-400">
+                              绝对金额/{amountUnit}
+                            </span>
+                          </TableHead>
                         </>
                       ) : null}
-                      <TableCell>
-                        <Button
-                          type="button"
-                          aria-label={`删除${holding.name || '该项持仓'}`}
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => {
-                            setHoldings((old) =>
-                              old.filter((item) => item.id !== holding.id),
-                            );
-                            setDirty(true);
-                            clearTargetOutcome();
-                          }}
-                        >
-                          <Trash2 />
-                        </Button>
-                      </TableCell>
+                      <TableHead className="w-12" />
                     </TableRow>
-                  );
-                })}
-                {!holdings.length ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={isRedemption ? 6 : 4}
-                      className="h-24 text-center text-sm text-slate-500"
-                    >
-                      还没有持仓。请新增持仓，并使金额合计与当前 AUM 一致。
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-            <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
-              持仓金额合计必须等于当前 AUM。选择“无机构归属 /
-              不计入本工具统计”仅表示该行不占用下方单一机构额度，须由合规确认；普通机构持仓不得归入此项。窄屏可左右滑动查看完整字段。
-              {isRedemption
-                ? ' 当前显示的是同比例情景，不代表赎回优先级。'
-                : ''}
-            </p>
-          </section>
-
-          <section className={card}>
-            <div className="section-head">
-              <div>
-                <p className="eyebrow">03 · 机构集中度</p>
-                <h2 className="mt-1 text-lg font-semibold">机构集中度汇总</h2>
-              </div>
-              <Badge variant="outline">
-                机构表 {banks.length} 家 · 备选库 {bankLibrary.length} 家
-              </Badge>
-            </div>
-
-            <div className="grid gap-4 border-b border-slate-100 bg-slate-50/70 p-5 lg:grid-cols-2">
-              <div className="rounded-xl border border-slate-200 bg-white p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-800">
-                      合作机构备选库
-                    </p>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      选择后可用于持仓归属和今日报价
-                    </p>
-                  </div>
-                  <Badge variant="secondary">仅保存在本机</Badge>
-                </div>
-                <div className="mt-3 flex gap-2">
-                  <NativeSelect
-                    aria-label="从合作机构备选库选择"
-                    value={
-                      availableBankTemplates.some(
-                        (bank) => bank.id === selectedBankTemplateId,
-                      )
-                        ? selectedBankTemplateId
-                        : ''
-                    }
-                    onChange={(event) =>
-                      setSelectedBankTemplateId(event.target.value)
-                    }
-                    className="min-w-0 flex-1"
-                  >
-                    <NativeSelectOption value="">
-                      {availableBankTemplates.length
-                        ? '选择备选机构'
-                        : '备选机构已全部加入'}
-                    </NativeSelectOption>
-                    {availableBankTemplates.map((bank) => (
-                      <NativeSelectOption value={bank.id} key={bank.id}>
-                        {bank.name} · 默认 {number(bank.defaultLimitPct)}%
-                      </NativeSelectOption>
-                    ))}
-                  </NativeSelect>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={
-                      !availableBankTemplates.some(
-                        (bank) => bank.id === selectedBankTemplateId,
-                      )
-                    }
-                    onClick={addBankFromLibrary}
-                  >
-                    <Plus /> 加入机构表
-                  </Button>
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 bg-white p-4">
-                <p className="text-sm font-semibold text-slate-800">
-                  新增合作机构
-                </p>
-                <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto]">
-                  <label htmlFor="new-bank-name" className="grid gap-1">
-                    <span className="text-xs text-slate-500">机构名称</span>
-                    <Input
-                      id="new-bank-name"
-                      aria-label="新增合作机构名称"
-                      value={newBankName}
-                      placeholder="例如：机构 F"
-                      onChange={(event) => setNewBankName(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') saveBankToLibrary();
-                      }}
-                    />
-                  </label>
-                  <label
-                    htmlFor="new-bank-limit"
-                    className={`grid gap-1 rounded-xl border p-2 ${
-                      newBankLimitError
-                        ? 'border-red-300 bg-red-50'
-                        : newBankLimitNotice
-                          ? 'border-yellow-300 bg-yellow-100/80'
-                          : 'border-transparent'
-                    }`}
-                  >
-                    <span className="text-xs text-slate-500">
-                      默认上限（%）
-                    </span>
-                    <EditableNumberInput
-                      id="new-bank-limit"
-                      aria-label="新增合作机构默认集中度上限百分比"
-                      value={newBankLimitPct}
-                      min={0}
-                      max={SFC_MAX_BANK_CONCENTRATION_PCT}
-                      step="0.01"
-                      onValueChange={(value) =>
-                        setNewBankLimitPct(value ?? Number.NaN)
-                      }
-                      aria-invalid={newBankLimitError ? true : undefined}
-                      className={`text-right ${
-                        newBankLimitError
-                          ? 'border-red-300 bg-red-50 text-red-950'
-                          : newBankLimitNotice
-                            ? 'border-yellow-300 bg-yellow-50 text-slate-950'
-                            : ''
-                      }`}
-                    />
-                    {newBankLimitError ? (
-                      <span
-                        role="alert"
-                        className="text-xs font-medium leading-4 text-red-600"
-                      >
-                        {newBankLimitError}
-                      </span>
-                    ) : newBankLimitNotice ? (
-                      <span className="text-xs font-medium leading-4 text-yellow-800">
-                        {newBankLimitNotice}
-                      </span>
-                    ) : null}
-                  </label>
-                  <div className="flex items-end">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={
-                        !newBankName.trim() ||
-                        !Number.isFinite(newBankLimitPct) ||
-                        newBankLimitPct < 0 ||
-                        newBankLimitPct > SFC_MAX_BANK_CONCENTRATION_PCT
-                      }
-                      onClick={saveBankToLibrary}
-                    >
-                      存入备选库
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {bankExposureTotalError ? (
-              <div className="border-b border-slate-100 px-5 py-4">
-                <Alert variant="destructive">
-                  <AlertTriangle />
-                  <AlertTitle>{bankExposureTotalError}</AlertTitle>
-                </Alert>
-              </div>
-            ) : null}
-
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
-                  <TableHead className="pl-5">机构</TableHead>
-                  <TableHead className="text-right">
-                    当前机构敞口
-                    <span className="block text-[11px] font-normal text-slate-400">
-                      从持仓自动汇总/{amountUnit}
-                    </span>
-                  </TableHead>
-                  <TableHead className="text-right">
-                    {isRedemption ? '赎回后占比（不变）' : '当前占比'}
-                    <span className="block text-[11px] font-normal text-slate-400">
-                      {isRedemption ? '与当前占比相同' : '占当前 AUM'}
-                    </span>
-                  </TableHead>
-                  <TableHead className="text-right">
-                    适用集中度上限
-                    <span className="block text-[11px] font-normal text-slate-400">
-                      合规确认 · 占交易后 NAV/%
-                    </span>
-                  </TableHead>
-                  <TableHead className="text-right">
-                    {isRedemption ? '赎回后持仓' : '交易后额度上限'}
-                    <span className="block text-[11px] font-normal text-slate-400">
-                      绝对金额/{amountUnit}
-                    </span>
-                  </TableHead>
-                  <TableHead className="text-right">
-                    {isRedemption ? '预计同比例赎回' : '本次最多可新增'}
-                    <span className="block text-[11px] font-normal text-slate-400">
-                      绝对金额/{amountUnit}
-                    </span>
-                  </TableHead>
-                  <TableHead className="w-12" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {modelBanks.map((bank) => {
-                  const concentrationError = bankConcentrationError(
-                    bank.limitPct,
-                  );
-                  const concentrationNotice = bankConcentrationNotice(
-                    bank.limitPct,
-                  );
-                  const finalCap = concentrationError
-                    ? Number.NaN
-                    : (postAum * bank.limitPct) / 100;
-                  const postTradeExposure = postTradeExistingExposure(
-                    portfolio,
-                    bank.currentExposure,
-                  );
-                  const remaining = Math.max(0, finalCap - postTradeExposure);
-                  const redeemed = Math.max(
-                    0,
-                    bank.currentExposure - postTradeExposure,
-                  );
-                  const linkedQuoteCount = quotes.filter(
-                    (quote) => quote.bankId === bank.id,
-                  ).length;
-                  const hasQuotes = linkedQuoteCount > 0;
-                  const linkedHoldingCount = holdings.filter(
-                    (holding) => holding.bankId === bank.id,
-                  ).length;
-                  const hasHoldings = linkedHoldingCount > 0;
-                  const referenceSummary = [
-                    hasHoldings ? linkedHoldingCount + ' 项持仓' : null,
-                    hasQuotes ? linkedQuoteCount + ' 项报价' : null,
-                  ]
-                    .filter(Boolean)
-                    .join('和');
-                  const exposureInvalid = bankExposureInvalidIds.has(bank.id);
-                  const postTradeExposureBreach = bankExposureBreachIds.has(
-                    bank.id,
-                  );
-                  const currentExposureBreach =
-                    currentBankExposureBreachIds.has(bank.id);
-                  const exposureCellError =
-                    exposureInvalid || postTradeExposureBreach;
-                  const exposureHighlight =
-                    exposureCellError || currentExposureBreach;
-                  return (
-                    <TableRow key={bank.id}>
-                      <TableCell className="min-w-32 pl-5">
-                        <p className="font-medium text-slate-800">
-                          {bank.name}
-                        </p>
-                        <p className="mt-0.5 text-xs text-slate-400">
-                          {linkedHoldingCount} 项持仓 · {linkedQuoteCount}{' '}
-                          项报价
-                        </p>
-                      </TableCell>
-                      <TableCell
-                        className={`min-w-28 align-top ${exposureHighlight ? 'bg-red-50/90' : ''}`}
-                      >
-                        <div className="grid gap-1">
-                          <p className="text-right font-semibold tabular-nums text-slate-800">
-                            {number(bank.currentExposure)} {amountUnit}
-                          </p>
-                          <p className="text-right text-[11px] text-slate-400">
-                            由 {linkedHoldingCount} 项持仓自动汇总
-                          </p>
-                          {exposureInvalid ? (
-                            <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
-                              请先修正对应持仓金额。
-                            </span>
-                          ) : postTradeExposureBreach ? (
-                            <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
-                              {isRedemption ? (
-                                <>同比例赎回后占比不变，仍超过适用上限。</>
-                              ) : (
-                                <>
-                                  计入新增资金后仍超过适用上限{' '}
-                                  {number(finalCap)} {amountUnit}。
-                                </>
-                              )}
-                            </span>
-                          ) : currentExposureBreach ? (
-                            <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
-                              当前占比超限；计入新增资金后可稀释至上限内。
-                            </span>
+                  </TableHeader>
+                  <TableBody>
+                    {holdings.map((holding) => {
+                      const nameInvalid = holdingNameInvalidIds.has(holding.id);
+                      const amountInvalid = holdingAmountInvalidIds.has(
+                        holding.id,
+                      );
+                      const bankInvalid = holdingBankInvalidIds.has(holding.id);
+                      const previewOutcome = previewHoldingOutcomeById.get(
+                        holding.id,
+                      );
+                      const redeemed = previewOutcome?.redeemed ?? Number.NaN;
+                      const finalAmount =
+                        previewOutcome?.finalAmount ?? Number.NaN;
+                      return (
+                        <TableRow key={holding.id}>
+                          <TableCell
+                            className={`min-w-52 pl-5 ${nameInvalid ? 'bg-red-50/90' : ''}`}
+                          >
+                            <div className="grid gap-1">
+                              <Input
+                                aria-label="持仓资产或产品名称"
+                                value={holding.name}
+                                aria-invalid={nameInvalid || undefined}
+                                className={
+                                  nameInvalid
+                                    ? 'border-red-300 bg-red-50 text-red-950'
+                                    : 'bg-white'
+                                }
+                                onChange={(event) =>
+                                  updateHolding(holding.id, {
+                                    name: event.target.value,
+                                  })
+                                }
+                              />
+                              {nameInvalid ? (
+                                <span
+                                  role="alert"
+                                  className="text-xs font-medium text-red-700"
+                                >
+                                  请输入资产或产品名称。
+                                </span>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                          <TableCell
+                            className={`min-w-52 ${bankInvalid ? 'bg-red-50/90' : ''}`}
+                          >
+                            <div className="grid gap-1">
+                              <NativeSelect
+                                aria-label={`${holding.name || '某项持仓'}的集中度归属机构`}
+                                disabled={holding.isBalancing}
+                                value={
+                                  holding.bankId === null
+                                    ? EXCLUDED_BANK_SELECT_VALUE
+                                    : holding.bankId
+                                }
+                                aria-invalid={bankInvalid || undefined}
+                                className={
+                                  bankInvalid
+                                    ? 'border-red-300 bg-red-50 text-red-950'
+                                    : 'bg-white'
+                                }
+                                onChange={(event) =>
+                                  updateHolding(holding.id, {
+                                    bankId:
+                                      event.target.value ===
+                                      EXCLUDED_BANK_SELECT_VALUE
+                                        ? null
+                                        : event.target.value,
+                                  })
+                                }
+                              >
+                                <NativeSelectOption value={UNASSIGNED_BANK_ID}>
+                                  请选择归属机构
+                                </NativeSelectOption>
+                                <NativeSelectOption
+                                  value={EXCLUDED_BANK_SELECT_VALUE}
+                                >
+                                  无机构归属 / 不计入本工具统计（需确认）
+                                </NativeSelectOption>
+                                {banks.map((bank) => (
+                                  <NativeSelectOption
+                                    value={bank.id}
+                                    key={bank.id}
+                                  >
+                                    {bank.name}
+                                  </NativeSelectOption>
+                                ))}
+                              </NativeSelect>
+                              {holding.isBalancing ? (
+                                <span className="text-xs font-medium text-amber-700">
+                                  自动补差专用行；明确不计入本工具的机构集中度统计。
+                                </span>
+                              ) : bankInvalid ? (
+                                <span
+                                  role="alert"
+                                  className="text-xs font-medium text-red-700"
+                                >
+                                  请选择机构，或明确选择不计入统计。
+                                </span>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                          <TableCell
+                            className={`min-w-32 ${amountInvalid ? 'bg-red-50/90' : ''}`}
+                          >
+                            <div className="grid gap-1">
+                              <EditableNumberInput
+                                aria-label={`${holding.name || '某项持仓'}当前金额，单位${amountUnit}`}
+                                value={holding.amount}
+                                min={0}
+                                step="0.01"
+                                aria-invalid={amountInvalid || undefined}
+                                className={`text-right ${
+                                  amountInvalid
+                                    ? 'border-red-300 bg-red-50 text-red-950'
+                                    : 'bg-white'
+                                }`}
+                                onValueChange={(value) =>
+                                  updateHolding(holding.id, {
+                                    amount: value ?? Number.NaN,
+                                  })
+                                }
+                              />
+                              {amountInvalid ? (
+                                <span
+                                  role="alert"
+                                  className="text-right text-xs font-medium text-red-700"
+                                >
+                                  请输入非负金额。
+                                </span>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                          {isRedemption ? (
+                            <>
+                              <TableCell className="text-right font-semibold text-teal-700">
+                                {number(redeemed)} {amountUnit}
+                              </TableCell>
+                              <TableCell className="text-right font-medium text-slate-700">
+                                {number(finalAmount)} {amountUnit}
+                              </TableCell>
+                            </>
                           ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell
-                        className={`text-right text-slate-600 ${
-                          exposureHighlight
-                            ? 'bg-red-50/90 font-medium text-red-800'
-                            : ''
-                        }`}
-                      >
-                        {portfolio.aum > 0
-                          ? percent(
-                              (bank.currentExposure / portfolio.aum) * 100,
-                            )
-                          : '—'}
-                      </TableCell>
-                      <TableCell
-                        className={`min-w-44 align-top ${
-                          concentrationError
-                            ? 'bg-red-50/90'
-                            : concentrationNotice
-                              ? 'bg-yellow-100/80'
-                              : ''
-                        }`}
-                      >
-                        <div className="grid gap-1">
-                          <EditableNumberInput
-                            aria-label={`${bank.name}经合规确认的适用集中度上限`}
-                            min={0}
-                            max={SFC_MAX_BANK_CONCENTRATION_PCT}
-                            step="0.01"
-                            value={bank.limitPct}
-                            onValueChange={(value) =>
-                              updateBank(bank.id, {
-                                limitPct: value ?? Number.NaN,
-                              })
-                            }
-                            aria-invalid={concentrationError ? true : undefined}
-                            className={`text-right ${
-                              concentrationError
-                                ? 'border-red-300 bg-red-50 text-red-950'
-                                : concentrationNotice
-                                  ? 'border-yellow-300 bg-yellow-50 text-slate-950'
-                                  : ''
-                            }`}
-                          />
-                          {concentrationError ? (
-                            <span
-                              role="alert"
-                              className="block max-w-52 whitespace-normal text-xs font-medium leading-4 text-red-600"
+                          <TableCell>
+                            <Button
+                              type="button"
+                              aria-label={`删除${holding.name || '该项持仓'}`}
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => {
+                                setHoldings((old) =>
+                                  old.filter((item) => item.id !== holding.id),
+                                );
+                                setDirty(true);
+                                clearTargetOutcome();
+                              }}
                             >
-                              {concentrationError}
-                            </span>
-                          ) : concentrationNotice ? (
-                            <span className="block max-w-52 whitespace-normal text-xs font-medium leading-4 text-yellow-800">
-                              {concentrationNotice}
-                            </span>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right font-medium text-slate-700">
-                        {number(isRedemption ? postTradeExposure : finalCap)}
-                      </TableCell>
-                      <TableCell className="text-right font-semibold text-teal-700">
-                        {number(isRedemption ? redeemed : remaining)}
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          aria-label={`将${bank.name}移出机构表`}
-                          title={
-                            hasHoldings || hasQuotes
-                              ? '该机构仍被' +
-                                referenceSummary +
-                                '使用；请先改绑或删除关联记录'
-                              : '移出机构表，但保留在合作机构备选库'
-                          }
-                          variant="ghost"
-                          size="icon-sm"
-                          disabled={hasHoldings || hasQuotes}
-                          onClick={() => {
-                            setBanks((old) =>
-                              old.filter((item) => item.id !== bank.id),
-                            );
-                            setDirty(true);
-                            clearTargetOutcome();
-                          }}
+                              <Trash2 />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {!holdings.length ? (
+                      <TableRow>
+                        <TableCell
+                          colSpan={isRedemption ? 6 : 4}
+                          className="h-24 text-center text-sm text-slate-500"
                         >
-                          <Trash2 />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-                {!modelBanks.length ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={7}
-                      className="h-20 text-center text-sm text-slate-500"
-                    >
-                      请先从合作机构备选库加入需要用于持仓或报价的机构。
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-            <div className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
-              <p>
-                {isRedemption ? (
-                  <>
-                    赎回后持仓 = 当前持仓 ×（交易后 AUM ÷ 当前
-                    AUM）；同比例赎回金额 = 当前持仓 −
-                    赎回后持仓。机构占比不会因同比例赎回改变。
-                  </>
-                ) : (
-                  <>
-                    当前占比 = 当前机构敞口 ÷ 当前 AUM；交易后额度上限 =（当前
-                    AUM + 新增待配置资金）× 集中度上限；本次最多可新增 =
-                    交易后额度上限 − 当前机构敞口。
-                  </>
-                )}
-              </p>
-              {quotes.length ||
-              holdings.some(
-                (holding) =>
-                  holding.bankId !== null &&
-                  holding.bankId !== UNASSIGNED_BANK_ID &&
-                  bankIds.has(holding.bankId),
-              ) ? (
-                <p className="mt-1">
-                  被持仓或报价引用的机构不能直接移除；请先在上方持仓表改绑，并删除对应报价。
+                          还没有持仓。请新增持仓，并使金额合计与当前 AUM 一致。
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </TableBody>
+                </Table>
+                <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
+                  持仓金额合计必须等于当前 AUM。选择“无机构归属 /
+                  不计入本工具统计”仅表示该行不占用下方单一机构额度，须由合规确认；普通机构持仓不得归入此项。窄屏可左右滑动查看完整字段。
                   {isRedemption
-                    ? ' 报价在本模式下隐藏，请切换到净申购后处理。'
+                    ? ' 当前显示的是同比例情景，不代表赎回优先级。'
                     : ''}
                 </p>
-              ) : null}
-              <p className="mt-1">
-                同一机构的全部产品合并占用额度。单一实体一般上限为
-                10%；仅当该实体为符合条件的实质金融机构，并经合规确认满足
-                8.2(g)(i) 条件时才可提高至 25%。本工具假设 AUM
-                等于集中度计算使用的 NAV。
-              </p>
-            </div>
-          </section>
+              </section>
 
-          <section className={card}>
-            <div className="section-head">
-              <div>
-                <p className="eyebrow">
-                  04 · {isRedemption ? '赎回规则' : '市场报价'}
-                </p>
-                <h2 className="mt-1 text-lg font-semibold">
-                  {isRedemption ? '按现有组合同比例赎回' : '今日可投产品与报价'}
-                </h2>
-              </div>
-              {isRedemption ? (
-                <Badge className="bg-teal-50 text-teal-800">
-                  不使用今日报价
-                </Badge>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!banks.length}
-                  onClick={() => {
-                    setQuotes((old) => [
-                      ...old,
-                      {
-                        id: id('quote'),
-                        name: '新产品',
-                        bankId: banks[0].id,
-                        wamDays: null,
-                        walDays: 30,
-                        rate: 3,
-                        cap: portfolio.transactionAmount,
-                      },
-                    ]);
-                    setDirty(true);
-                    clearTargetOutcome();
-                  }}
-                >
-                  <Plus /> 添加报价
-                </Button>
-              )}
-            </div>
-            {isRedemption ? (
-              <div className="p-5">
-                <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-4">
-                  <p className="text-sm font-semibold text-slate-900">
-                    当前版本不选择具体赎回产品
-                  </p>
-                  <p className="mt-1 text-sm leading-6 text-slate-600">
-                    系统按“净赎回金额 ÷ 当前
-                    AUM”的比例，同步缩减现有组合中的所有资产和机构敞口。因此
-                    YTM、WAM、WAL 与机构占比保持不变。
-                  </p>
-                  <p className="mt-2 text-xs leading-5 text-slate-500">
-                    上方持仓表会逐项列出预计赎回额和剩余金额；当前仍不判断赎回优先级。后续可在这张底表上增加产品级收益、期限和可赎回额度，再优化具体来源。
-                  </p>
+              <section className={card}>
+                <div className="section-head">
+                  <div>
+                    <p className="eyebrow">02 · 机构集中度</p>
+                    <h2 className="mt-1 text-lg font-semibold">
+                      机构集中度汇总
+                    </h2>
+                  </div>
+                  <Badge variant="outline">
+                    机构表 {banks.length} 家 · 备选库 {bankLibrary.length} 家
+                  </Badge>
                 </div>
-              </div>
-            ) : (
-              <>
+
+                <div className="grid gap-4 border-b border-slate-100 bg-slate-50/70 p-5 lg:grid-cols-2">
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-800">
+                          合作机构备选库
+                        </p>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          选择后可用于持仓归属和今日报价
+                        </p>
+                      </div>
+                      <Badge variant="secondary">仅保存在本机</Badge>
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <NativeSelect
+                        aria-label="从合作机构备选库选择"
+                        value={
+                          availableBankTemplates.some(
+                            (bank) => bank.id === selectedBankTemplateId,
+                          )
+                            ? selectedBankTemplateId
+                            : ''
+                        }
+                        onChange={(event) =>
+                          setSelectedBankTemplateId(event.target.value)
+                        }
+                        className="min-w-0 flex-1"
+                      >
+                        <NativeSelectOption value="">
+                          {availableBankTemplates.length
+                            ? '选择备选机构'
+                            : '备选机构已全部加入'}
+                        </NativeSelectOption>
+                        {availableBankTemplates.map((bank) => (
+                          <NativeSelectOption value={bank.id} key={bank.id}>
+                            {bank.name} · 默认 {number(bank.defaultLimitPct)}%
+                          </NativeSelectOption>
+                        ))}
+                      </NativeSelect>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={
+                          !availableBankTemplates.some(
+                            (bank) => bank.id === selectedBankTemplateId,
+                          )
+                        }
+                        onClick={addBankFromLibrary}
+                      >
+                        <Plus /> 加入机构表
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                    <p className="text-sm font-semibold text-slate-800">
+                      新增合作机构
+                    </p>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto]">
+                      <label htmlFor="new-bank-name" className="grid gap-1">
+                        <span className="text-xs text-slate-500">机构名称</span>
+                        <Input
+                          id="new-bank-name"
+                          aria-label="新增合作机构名称"
+                          value={newBankName}
+                          placeholder="例如：机构 F"
+                          onChange={(event) =>
+                            setNewBankName(event.target.value)
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') saveBankToLibrary();
+                          }}
+                        />
+                      </label>
+                      <label
+                        htmlFor="new-bank-limit"
+                        className={`grid gap-1 rounded-xl border p-2 ${
+                          newBankLimitError
+                            ? 'border-red-300 bg-red-50'
+                            : newBankLimitNotice
+                              ? 'border-yellow-300 bg-yellow-100/80'
+                              : 'border-transparent'
+                        }`}
+                      >
+                        <span className="text-xs text-slate-500">
+                          默认上限（%）
+                        </span>
+                        <EditableNumberInput
+                          id="new-bank-limit"
+                          aria-label="新增合作机构默认集中度上限百分比"
+                          value={newBankLimitPct}
+                          min={0}
+                          max={SFC_MAX_BANK_CONCENTRATION_PCT}
+                          step="0.01"
+                          onValueChange={(value) =>
+                            setNewBankLimitPct(value ?? Number.NaN)
+                          }
+                          aria-invalid={newBankLimitError ? true : undefined}
+                          className={`text-right ${
+                            newBankLimitError
+                              ? 'border-red-300 bg-red-50 text-red-950'
+                              : newBankLimitNotice
+                                ? 'border-yellow-300 bg-yellow-50 text-slate-950'
+                                : ''
+                          }`}
+                        />
+                        {newBankLimitError ? (
+                          <span
+                            role="alert"
+                            className="text-xs font-medium leading-4 text-red-600"
+                          >
+                            {newBankLimitError}
+                          </span>
+                        ) : newBankLimitNotice ? (
+                          <span className="text-xs font-medium leading-4 text-yellow-800">
+                            {newBankLimitNotice}
+                          </span>
+                        ) : null}
+                      </label>
+                      <div className="flex items-end">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={
+                            !newBankName.trim() ||
+                            !Number.isFinite(newBankLimitPct) ||
+                            newBankLimitPct < 0 ||
+                            newBankLimitPct > SFC_MAX_BANK_CONCENTRATION_PCT
+                          }
+                          onClick={saveBankToLibrary}
+                        >
+                          存入备选库
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {bankExposureTotalError ? (
+                  <div className="border-b border-slate-100 px-5 py-4">
+                    <Alert variant="destructive">
+                      <AlertTriangle />
+                      <AlertTitle>{bankExposureTotalError}</AlertTitle>
+                    </Alert>
+                  </div>
+                ) : null}
+
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
-                      <TableHead className="pl-5">产品</TableHead>
-                      <TableHead>机构</TableHead>
-                      <TableHead className="text-right">WAM/天</TableHead>
-                      <TableHead className="text-right">WAL/天</TableHead>
-                      <TableHead className="text-right">利率/%</TableHead>
+                      <TableHead className="pl-5">机构</TableHead>
                       <TableHead className="text-right">
-                        本次可投上限
+                        当前机构敞口
+                        <span className="block text-[11px] font-normal text-slate-400">
+                          从持仓自动汇总/{amountUnit}
+                        </span>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        {isRedemption ? '赎回后占比（不变）' : '当前占比'}
+                        <span className="block text-[11px] font-normal text-slate-400">
+                          {isRedemption ? '与当前占比相同' : '占当前 AUM'}
+                        </span>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        适用集中度上限
+                        <span className="block text-[11px] font-normal text-slate-400">
+                          合规确认 · 占交易后 NAV/%
+                        </span>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        {isRedemption ? '赎回后持仓' : '交易后额度上限'}
+                        <span className="block text-[11px] font-normal text-slate-400">
+                          绝对金额/{amountUnit}
+                        </span>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        {isRedemption ? '预计同比例赎回' : '本次最多可新增'}
                         <span className="block text-[11px] font-normal text-slate-400">
                           绝对金额/{amountUnit}
                         </span>
@@ -3396,420 +3144,809 @@ export default function Home() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {quotes.map((quote) => (
-                      <TableRow key={quote.id}>
-                        <TableCell className="min-w-48 pl-5">
-                          <Input
-                            aria-label="产品名称"
-                            value={quote.name}
-                            onChange={(event) =>
-                              updateQuote(quote.id, {
-                                name: event.target.value,
-                              })
-                            }
-                          />
-                        </TableCell>
-                        <TableCell className="min-w-32">
-                          <NativeSelect
-                            aria-label={`${quote.name}机构`}
-                            value={quote.bankId}
-                            onChange={(event) =>
-                              updateQuote(quote.id, {
-                                bankId: event.target.value,
-                              })
-                            }
-                            className="w-full"
-                          >
-                            {banks.map((bank) => (
-                              <NativeSelectOption value={bank.id} key={bank.id}>
-                                {bank.name}
-                              </NativeSelectOption>
-                            ))}
-                          </NativeSelect>
-                        </TableCell>
-                        <TableCell className="min-w-24">
-                          <EditableNumberInput
-                            aria-label={`${quote.name}计入WAM的天数`}
-                            value={quote.wamDays}
-                            placeholder="同 WAL"
-                            min={0}
-                            step={1}
-                            onValueChange={(value) =>
-                              updateQuote(quote.id, { wamDays: value })
-                            }
-                            aria-invalid={
-                              (quote.wamDays !== null &&
-                                (!Number.isFinite(quote.wamDays) ||
-                                  quote.wamDays < 0 ||
-                                  quote.wamDays > quote.walDays)) ||
-                              undefined
-                            }
-                            className="text-right"
-                          />
-                        </TableCell>
-                        <TableCell className="min-w-24">
-                          <EditableNumberInput
-                            aria-label={`${quote.name}计入WAL的天数`}
-                            value={quote.walDays}
-                            min={0}
-                            step={1}
-                            onValueChange={(value) =>
-                              updateQuote(quote.id, {
-                                walDays: value ?? Number.NaN,
-                              })
-                            }
-                            aria-invalid={
-                              !Number.isFinite(quote.walDays) ||
-                              quote.walDays < 0 ||
-                              quoteWamDays(quote) > quote.walDays ||
-                              undefined
-                            }
-                            className="text-right"
-                          />
-                        </TableCell>
-                        {(
-                          [
-                            ['rate', quote.rate, '利率'],
-                            ['cap', quote.cap, '报价额度'],
-                          ] as const
-                        ).map(([key, value, inputLabel]) => (
-                          <TableCell className="min-w-24" key={key}>
-                            <EditableNumberInput
-                              aria-label={`${quote.name}${inputLabel}`}
-                              value={value}
-                              min={key === 'cap' ? 0 : undefined}
-                              step="0.01"
-                              onValueChange={(nextValue) =>
-                                updateQuote(quote.id, {
-                                  [key]: nextValue ?? Number.NaN,
-                                })
-                              }
-                              aria-invalid={
-                                !Number.isFinite(value) || undefined
-                              }
-                              className="text-right"
-                            />
+                    {modelBanks.map((bank) => {
+                      const concentrationError = bankConcentrationError(
+                        bank.limitPct,
+                      );
+                      const concentrationNotice = bankConcentrationNotice(
+                        bank.limitPct,
+                      );
+                      const finalCap = concentrationError
+                        ? Number.NaN
+                        : (postAum * bank.limitPct) / 100;
+                      const postTradeExposure = postTradeExistingExposure(
+                        portfolio,
+                        bank.currentExposure,
+                      );
+                      const remaining = Math.max(
+                        0,
+                        finalCap - postTradeExposure,
+                      );
+                      const redeemed = Math.max(
+                        0,
+                        bank.currentExposure - postTradeExposure,
+                      );
+                      const linkedQuoteCount = quotes.filter(
+                        (quote) => quote.bankId === bank.id,
+                      ).length;
+                      const hasQuotes = linkedQuoteCount > 0;
+                      const linkedHoldingCount = holdings.filter(
+                        (holding) => holding.bankId === bank.id,
+                      ).length;
+                      const hasHoldings = linkedHoldingCount > 0;
+                      const referenceSummary = [
+                        hasHoldings ? linkedHoldingCount + ' 项持仓' : null,
+                        hasQuotes ? linkedQuoteCount + ' 项报价' : null,
+                      ]
+                        .filter(Boolean)
+                        .join('和');
+                      const exposureInvalid = bankExposureInvalidIds.has(
+                        bank.id,
+                      );
+                      const postTradeExposureBreach = bankExposureBreachIds.has(
+                        bank.id,
+                      );
+                      const currentExposureBreach =
+                        currentBankExposureBreachIds.has(bank.id);
+                      const exposureCellError =
+                        exposureInvalid || postTradeExposureBreach;
+                      const exposureHighlight =
+                        exposureCellError || currentExposureBreach;
+                      return (
+                        <TableRow key={bank.id}>
+                          <TableCell className="min-w-32 pl-5">
+                            <p className="font-medium text-slate-800">
+                              {bank.name}
+                            </p>
+                            <p className="mt-0.5 text-xs text-slate-400">
+                              {linkedHoldingCount} 项持仓 · {linkedQuoteCount}{' '}
+                              项报价
+                            </p>
                           </TableCell>
-                        ))}
-                        <TableCell>
-                          <Button
-                            aria-label={`删除${quote.name}`}
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => {
-                              setQuotes((old) =>
-                                old.filter((item) => item.id !== quote.id),
-                              );
-                              setDirty(true);
-                              clearTargetOutcome();
-                            }}
+                          <TableCell
+                            className={`min-w-28 align-top ${exposureHighlight ? 'bg-red-50/90' : ''}`}
                           >
-                            <Trash2 />
-                          </Button>
+                            <div className="grid gap-1">
+                              <p className="text-right font-semibold tabular-nums text-slate-800">
+                                {number(bank.currentExposure)} {amountUnit}
+                              </p>
+                              <p className="text-right text-[11px] text-slate-400">
+                                由 {linkedHoldingCount} 项持仓自动汇总
+                              </p>
+                              {exposureInvalid ? (
+                                <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
+                                  请先修正对应持仓金额。
+                                </span>
+                              ) : postTradeExposureBreach ? (
+                                <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
+                                  {isRedemption ? (
+                                    <>同比例赎回后占比不变，仍超过适用上限。</>
+                                  ) : (
+                                    <>
+                                      计入新增资金后仍超过适用上限{' '}
+                                      {number(finalCap)} {amountUnit}。
+                                    </>
+                                  )}
+                                </span>
+                              ) : currentExposureBreach ? (
+                                <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
+                                  当前占比超限；计入新增资金后可稀释至上限内。
+                                </span>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                          <TableCell
+                            className={`text-right text-slate-600 ${
+                              exposureHighlight
+                                ? 'bg-red-50/90 font-medium text-red-800'
+                                : ''
+                            }`}
+                          >
+                            {portfolio.aum > 0
+                              ? percent(
+                                  (bank.currentExposure / portfolio.aum) * 100,
+                                )
+                              : '—'}
+                          </TableCell>
+                          <TableCell
+                            className={`min-w-44 align-top ${
+                              concentrationError
+                                ? 'bg-red-50/90'
+                                : concentrationNotice
+                                  ? 'bg-yellow-100/80'
+                                  : ''
+                            }`}
+                          >
+                            <div className="grid gap-1">
+                              <EditableNumberInput
+                                aria-label={`${bank.name}经合规确认的适用集中度上限`}
+                                min={0}
+                                max={SFC_MAX_BANK_CONCENTRATION_PCT}
+                                step="0.01"
+                                value={bank.limitPct}
+                                onValueChange={(value) =>
+                                  updateBank(bank.id, {
+                                    limitPct: value ?? Number.NaN,
+                                  })
+                                }
+                                aria-invalid={
+                                  concentrationError ? true : undefined
+                                }
+                                className={`text-right ${
+                                  concentrationError
+                                    ? 'border-red-300 bg-red-50 text-red-950'
+                                    : concentrationNotice
+                                      ? 'border-yellow-300 bg-yellow-50 text-slate-950'
+                                      : ''
+                                }`}
+                              />
+                              {concentrationError ? (
+                                <span
+                                  role="alert"
+                                  className="block max-w-52 whitespace-normal text-xs font-medium leading-4 text-red-600"
+                                >
+                                  {concentrationError}
+                                </span>
+                              ) : concentrationNotice ? (
+                                <span className="block max-w-52 whitespace-normal text-xs font-medium leading-4 text-yellow-800">
+                                  {concentrationNotice}
+                                </span>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-right font-medium text-slate-700">
+                            {number(
+                              isRedemption ? postTradeExposure : finalCap,
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right font-semibold text-teal-700">
+                            {number(isRedemption ? redeemed : remaining)}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              aria-label={`将${bank.name}移出机构表`}
+                              title={
+                                hasHoldings || hasQuotes
+                                  ? '该机构仍被' +
+                                    referenceSummary +
+                                    '使用；请先改绑或删除关联记录'
+                                  : '移出机构表，但保留在合作机构备选库'
+                              }
+                              variant="ghost"
+                              size="icon-sm"
+                              disabled={hasHoldings || hasQuotes}
+                              onClick={() => {
+                                setBanks((old) =>
+                                  old.filter((item) => item.id !== bank.id),
+                                );
+                                setDirty(true);
+                                clearTargetOutcome();
+                              }}
+                            >
+                              <Trash2 />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {!modelBanks.length ? (
+                      <TableRow>
+                        <TableCell
+                          colSpan={7}
+                          className="h-20 text-center text-sm text-slate-500"
+                        >
+                          请先从合作机构备选库加入需要用于持仓或报价的机构。
                         </TableCell>
                       </TableRow>
-                    ))}
+                    ) : null}
                   </TableBody>
                 </Table>
-                <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
-                  WAL 填剩余最终到期天数。WAM 留空时自动按 WAL
-                  处理；仅在已确认浮息工具可按下一次利率重定价计量时，填写更短的
-                  WAM 天数。报价额度与 AUM 使用同一绝对金额单位。
-                </p>
-              </>
-            )}
-          </section>
-
-          {hasRegulatoryLimitViolation ? (
-            <Alert variant="destructive" aria-live="assertive">
-              <AlertTriangle />
-              <AlertTitle>
-                存在超出监管硬上限、持仓合计异常或无效输入，请先修正上方提示。
-              </AlertTitle>
-            </Alert>
-          ) : null}
-
-          <div
-            className={`${card} flex flex-wrap items-center justify-between gap-3 p-4`}
-          >
-            <div className="flex items-center gap-2 text-sm text-slate-500">
-              <ShieldCheck className="size-4 text-teal-600" />
-              {isRedemption
-                ? '按现有组合同比例扣减；不使用市场报价'
-                : '连续金额优化；未配置资金按零期限、零收益现金处理'}
-            </div>
-            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-              <Button
-                variant="outline"
-                size="lg"
-                onClick={reset}
-                className="w-full sm:w-auto"
-              >
-                <RefreshCcw /> 恢复示例
-              </Button>
-              <Button
-                size="lg"
-                onClick={calculate}
-                disabled={hasRegulatoryLimitViolation}
-                className="w-full bg-teal-600 px-5 text-white hover:bg-teal-700 sm:w-auto"
-              >
-                {isRedemption ? '测算赎回后组合' : '计算最优配置'}{' '}
-                <ArrowRight />
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        <aside className="xl:self-start">
-          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
-            <div className="flex items-start justify-between border-b border-slate-100 px-5 py-4">
-              <div>
-                <p className="eyebrow">决策面板</p>
-                <h2 className="mt-1 text-lg font-semibold">
-                  {isRedemption ? '赎回后组合快照' : '收益前沿与推荐配置'}
-                </h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  {isRedemption
-                    ? '按现有组合同比例缩减；结果以最近一次测算为准'
-                    : '前沿随输入实时更新；配置结果以最近一次计算为准'}
-                </p>
-              </div>
-              {hasRegulatoryLimitViolation ? (
-                <Badge variant="destructive">监管/输入需修正</Badge>
-              ) : dirty ? (
-                <Badge className="bg-amber-100 text-amber-800">
-                  待重新计算
-                </Badge>
-              ) : result.ok ? (
-                <Badge className="bg-emerald-100 text-emerald-800">
-                  <Check /> 约束通过
-                </Badge>
-              ) : (
-                <Badge variant="destructive">输入需调整</Badge>
-              )}
-            </div>
-
-            {isRedemption ? (
-              <div className="border-b border-slate-100 p-5">
-                <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-4">
-                  <p className="eyebrow">赎回影响</p>
-                  <h3 className="mt-1 text-base font-semibold">
-                    同比例赎回不改变期限与收益指标
-                  </h3>
-                  <p className="mt-2 text-sm leading-6 text-slate-600">
-                    本模式没有新的买入配置，因此不展示收益前沿或目标 YTM
-                    反推。交易后结果仅由赎回金额和当前组合快照决定。
+                <div className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
+                  <p>
+                    {isRedemption ? (
+                      <>
+                        赎回后持仓 = 当前持仓 ×（交易后 AUM ÷ 当前
+                        AUM）；同比例赎回金额 = 当前持仓 −
+                        赎回后持仓。机构占比不会因同比例赎回改变。
+                      </>
+                    ) : (
+                      <>
+                        当前占比 = 当前机构敞口 ÷ 当前 AUM；交易后额度上限
+                        =（当前 AUM + 新增待配置资金）×
+                        集中度上限；本次最多可新增 = 交易后额度上限 −
+                        当前机构敞口。
+                      </>
+                    )}
+                  </p>
+                  {quotes.length ||
+                  holdings.some(
+                    (holding) =>
+                      holding.bankId !== null &&
+                      holding.bankId !== UNASSIGNED_BANK_ID &&
+                      bankIds.has(holding.bankId),
+                  ) ? (
+                    <div className="mt-1">
+                      <p>
+                        被持仓或报价引用的机构不能直接移除；持仓请先在上方改绑，关联报价请返回配置测算界面删除。
+                        {isRedemption
+                          ? ' 当前为净赎回模式，需先切换至净申购后查看报价。'
+                          : ''}
+                      </p>
+                      {quotes.length ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="mt-2 bg-white"
+                          onClick={() => setWorkspaceView('planner')}
+                        >
+                          返回配置测算查看报价 <ArrowRight />
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <p className="mt-1">
+                    同一机构的全部产品合并占用额度。单一实体一般上限为
+                    10%；仅当该实体为符合条件的实质金融机构，并经合规确认满足
+                    8.2(g)(i) 条件时才可提高至 25%。本工具假设 AUM
+                    等于集中度计算使用的 NAV。
                   </p>
                 </div>
-              </div>
-            ) : (
-              <div className="border-b border-slate-100">
-                <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
+              </section>
+            </>
+          )}
+
+          {workspaceView === 'planner' ? (
+            <>
+              <section className={card}>
+                <div className="section-head">
                   <div>
-                    <p className="eyebrow">收益前沿</p>
-                    <h3 className="mt-1 flex items-center gap-2 text-base font-semibold">
-                      <TrendingUp className="size-4 text-teal-700" />
-                      多一天期限，换来多少收益
-                    </h3>
+                    <p className="eyebrow">
+                      02 · {isRedemption ? '赎回规则' : '市场报价'}
+                    </p>
+                    <h2 className="mt-1 text-lg font-semibold">
+                      {isRedemption
+                        ? '按现有组合同比例赎回'
+                        : '今日可投产品与报价'}
+                    </h2>
                   </div>
-                  <div
-                    className="inline-flex rounded-xl bg-slate-100 p-1"
-                    role="tablist"
-                    aria-label="选择期限指标"
-                  >
-                    {(['wam', 'wal'] as const).map((mode) => (
-                      <button
-                        key={mode}
-                        id={`${mode}-frontier-tab`}
-                        type="button"
-                        role="tab"
-                        aria-selected={frontierMode === mode}
-                        aria-controls="frontier-panel"
-                        onClick={() => {
-                          setFrontierMode(mode);
-                          clearTargetOutcome();
-                        }}
-                        className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-                          frontierMode === mode
-                            ? 'bg-white text-slate-950 shadow-sm'
-                            : 'text-slate-500 hover:text-slate-800'
-                        }`}
-                      >
-                        {mode.toUpperCase()} 曲线
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div
-                  id="frontier-panel"
-                  role="tabpanel"
-                  aria-labelledby={`${frontierMode}-frontier-tab`}
-                >
-                  {holdingErrors.length ? (
-                    <div className="p-5">
-                      <Alert variant="destructive">
-                        <AlertTriangle />
-                        <AlertTitle>
-                          请先修正“当前持仓”中的名称、机构归属和金额，随后再生成收益前沿。
-                        </AlertTitle>
-                      </Alert>
-                    </div>
+                  {isRedemption ? (
+                    <Badge className="bg-teal-50 text-teal-800">
+                      不使用今日报价
+                    </Badge>
                   ) : (
-                    <FrontierPanel
-                      mode={frontierMode}
-                      points={frontiers[frontierMode]}
-                      currentLimit={
-                        frontierMode === 'wam'
-                          ? portfolio.maxWam
-                          : portfolio.maxWal
-                      }
-                      otherLimit={
-                        frontierMode === 'wam'
-                          ? portfolio.maxWal
-                          : portfolio.maxWam
-                      }
-                      onSelect={(day) => selectFrontierDay(frontierMode, day)}
-                      targetYtm={targetYtm}
-                      targetYtmError={targetYtmError}
-                      targetYtmMessage={targetYtmMessage}
-                      onTargetYtmChange={(value) => {
-                        setTargetYtm(value);
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!banks.length}
+                      onClick={() => {
+                        setQuotes((old) => [
+                          ...old,
+                          {
+                            id: id('quote'),
+                            name: '新产品',
+                            bankId: banks[0].id,
+                            wamDays: null,
+                            walDays: 30,
+                            rate: 3,
+                            cap: portfolio.transactionAmount,
+                          },
+                        ]);
+                        setDirty(true);
                         clearTargetOutcome();
                       }}
-                      onSolveTarget={reverseTargetYtm}
-                      disabled={hasRegulatoryLimitViolation}
-                    />
+                    >
+                      <Plus /> 添加报价
+                    </Button>
                   )}
                 </div>
-              </div>
-            )}
-
-            <div className="border-b border-slate-100 px-5 py-4">
-              <p className="eyebrow">{isRedemption ? '测算结果' : '最优解'}</p>
-              <h3 className="mt-1 text-base font-semibold">
-                {isRedemption ? '同比例赎回结果' : '推荐配置'}
-              </h3>
-            </div>
-
-            {hasRegulatoryLimitViolation ? (
-              <div className="p-5">
-                <Alert variant="destructive" className="p-4">
-                  <AlertTriangle />
-                  <AlertTitle>
-                    {isRedemption
-                      ? '赎回测算已暂时隐藏。请先修正标红字段，再重新测算。'
-                      : '推荐配置已暂时隐藏。请先修正标红字段，再重新计算。'}
-                  </AlertTitle>
-                </Alert>
-              </div>
-            ) : result.ok ? (
-              <div
-                aria-live="polite"
-                className={dirty ? 'opacity-55 transition-opacity' : ''}
-              >
-                {result.tradeMode === 'redemption' ? (
-                  <div className="px-5 pt-5">
-                    <div className="flex items-center justify-between gap-4 rounded-xl border border-teal-200 bg-teal-50/70 px-4 py-3">
-                      <div>
-                        <p className="text-xs font-medium text-slate-500">
-                          本次赎回比例
-                        </p>
-                        <p className="mt-0.5 text-sm text-slate-600">
-                          净赎回金额 ÷ 当前 AUM
-                        </p>
-                      </div>
-                      <p className="text-xl font-semibold tabular-nums text-teal-800">
-                        {percent(result.redemptionRatio * 100, 2)}
+                {isRedemption ? (
+                  <div className="p-5">
+                    <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-4">
+                      <p className="text-sm font-semibold text-slate-900">
+                        当前版本不选择具体赎回产品
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">
+                        系统按“净赎回金额 ÷ 当前
+                        AUM”的比例，同步缩减现有组合中的所有资产和机构敞口。因此
+                        YTM、WAM、WAL 与机构占比保持不变。
+                      </p>
+                      <p className="mt-2 text-xs leading-5 text-slate-500">
+                        “当前持仓”界面会逐项列出预计赎回额和剩余金额；当前仍不判断赎回优先级。后续可在这张底表上增加产品级收益、期限和可赎回额度，再优化具体来源。
                       </p>
                     </div>
                   </div>
-                ) : null}
-                <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2">
-                  <Metric
-                    label="交易后 AUM"
-                    value={`${number(result.postAum)} ${amountUnit}`}
-                    detail={`${result.tradeMode === 'redemption' ? '赎回' : '新增'} ${number(result.transactionAmount)} ${amountUnit}`}
-                  />
-                  <Metric
-                    label="交易后 YTM"
-                    value={percent(result.postYtm, 3)}
-                    detail={
-                      result.tradeMode === 'redemption'
-                        ? '同比例赎回，与当前组合一致'
-                        : `新增资金 ${percent(result.allocationYield, 3)}`
-                    }
-                    accent
-                  />
-                  <Metric
-                    label="交易后 WAM"
-                    value={`${number(result.postWam)} 天`}
-                    detail={
-                      result.tradeMode === 'redemption'
-                        ? '同比例赎回，与当前组合一致'
-                        : `计算所用上限 ${number(result.appliedMaxWam)} 天`
-                    }
-                  />
-                  <Metric
-                    label="交易后 WAL"
-                    value={`${number(result.postWal)} 天`}
-                    detail={
-                      result.tradeMode === 'redemption'
-                        ? '同比例赎回，与当前组合一致'
-                        : `计算所用上限 ${number(result.appliedMaxWal)} 天`
-                    }
-                  />
-                </div>
-
-                {result.tradeMode === 'subscription' ? (
+                ) : (
                   <>
-                    {result.unallocated > EPSILON ? (
-                      <div className="px-5 pb-4">
-                        <Alert className="border-amber-200 bg-amber-50">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
+                          <TableHead className="pl-5">产品</TableHead>
+                          <TableHead>机构</TableHead>
+                          <TableHead className="text-right">WAM/天</TableHead>
+                          <TableHead className="text-right">WAL/天</TableHead>
+                          <TableHead className="text-right">利率/%</TableHead>
+                          <TableHead className="text-right">
+                            本次可投上限
+                            <span className="block text-[11px] font-normal text-slate-400">
+                              绝对金额/{amountUnit}
+                            </span>
+                          </TableHead>
+                          <TableHead className="w-12" />
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {quotes.map((quote) => (
+                          <TableRow key={quote.id}>
+                            <TableCell className="min-w-48 pl-5">
+                              <Input
+                                aria-label="产品名称"
+                                value={quote.name}
+                                onChange={(event) =>
+                                  updateQuote(quote.id, {
+                                    name: event.target.value,
+                                  })
+                                }
+                              />
+                            </TableCell>
+                            <TableCell className="min-w-32">
+                              <NativeSelect
+                                aria-label={`${quote.name}机构`}
+                                value={quote.bankId}
+                                onChange={(event) =>
+                                  updateQuote(quote.id, {
+                                    bankId: event.target.value,
+                                  })
+                                }
+                                className="w-full"
+                              >
+                                {banks.map((bank) => (
+                                  <NativeSelectOption
+                                    value={bank.id}
+                                    key={bank.id}
+                                  >
+                                    {bank.name}
+                                  </NativeSelectOption>
+                                ))}
+                              </NativeSelect>
+                            </TableCell>
+                            <TableCell className="min-w-24">
+                              <EditableNumberInput
+                                aria-label={`${quote.name}计入WAM的天数`}
+                                value={quote.wamDays}
+                                placeholder="同 WAL"
+                                min={0}
+                                step={1}
+                                onValueChange={(value) =>
+                                  updateQuote(quote.id, { wamDays: value })
+                                }
+                                aria-invalid={
+                                  (quote.wamDays !== null &&
+                                    (!Number.isFinite(quote.wamDays) ||
+                                      quote.wamDays < 0 ||
+                                      quote.wamDays > quote.walDays)) ||
+                                  undefined
+                                }
+                                className="text-right"
+                              />
+                            </TableCell>
+                            <TableCell className="min-w-24">
+                              <EditableNumberInput
+                                aria-label={`${quote.name}计入WAL的天数`}
+                                value={quote.walDays}
+                                min={0}
+                                step={1}
+                                onValueChange={(value) =>
+                                  updateQuote(quote.id, {
+                                    walDays: value ?? Number.NaN,
+                                  })
+                                }
+                                aria-invalid={
+                                  !Number.isFinite(quote.walDays) ||
+                                  quote.walDays < 0 ||
+                                  quoteWamDays(quote) > quote.walDays ||
+                                  undefined
+                                }
+                                className="text-right"
+                              />
+                            </TableCell>
+                            {(
+                              [
+                                ['rate', quote.rate, '利率'],
+                                ['cap', quote.cap, '报价额度'],
+                              ] as const
+                            ).map(([key, value, inputLabel]) => (
+                              <TableCell className="min-w-24" key={key}>
+                                <EditableNumberInput
+                                  aria-label={`${quote.name}${inputLabel}`}
+                                  value={value}
+                                  min={key === 'cap' ? 0 : undefined}
+                                  step="0.01"
+                                  onValueChange={(nextValue) =>
+                                    updateQuote(quote.id, {
+                                      [key]: nextValue ?? Number.NaN,
+                                    })
+                                  }
+                                  aria-invalid={
+                                    !Number.isFinite(value) || undefined
+                                  }
+                                  className="text-right"
+                                />
+                              </TableCell>
+                            ))}
+                            <TableCell>
+                              <Button
+                                aria-label={`删除${quote.name}`}
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={() => {
+                                  setQuotes((old) =>
+                                    old.filter((item) => item.id !== quote.id),
+                                  );
+                                  setDirty(true);
+                                  clearTargetOutcome();
+                                }}
+                              >
+                                <Trash2 />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                    <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
+                      WAL 填剩余最终到期天数。WAM 留空时自动按 WAL
+                      处理；仅在已确认浮息工具可按下一次利率重定价计量时，填写更短的
+                      WAM 天数。报价额度与 AUM 使用同一绝对金额单位。
+                    </p>
+                  </>
+                )}
+              </section>
+
+              {hasRegulatoryLimitViolation ? (
+                <Alert variant="destructive" aria-live="assertive">
+                  <AlertTriangle />
+                  <div>
+                    <AlertTitle>
+                      {hasHoldingsWorkspaceViolation
+                        ? '当前持仓或机构集中度数据需修正，完成后才能继续计算。'
+                        : '存在超出监管硬上限或无效输入，请先修正上方提示。'}
+                    </AlertTitle>
+                    {hasHoldingsWorkspaceViolation ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-3 border-red-300 bg-white text-red-800 hover:bg-red-50"
+                        onClick={() => setWorkspaceView('holdings')}
+                      >
+                        前往当前持仓处理 <ArrowRight />
+                      </Button>
+                    ) : null}
+                  </div>
+                </Alert>
+              ) : null}
+
+              <div
+                className={`${card} flex flex-wrap items-center justify-between gap-3 p-4`}
+              >
+                <div className="flex items-center gap-2 text-sm text-slate-500">
+                  <ShieldCheck className="size-4 text-teal-600" />
+                  {isRedemption
+                    ? '按现有组合同比例扣减；不使用市场报价'
+                    : '连续金额优化；未配置资金按零期限、零收益现金处理'}
+                </div>
+                <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    onClick={reset}
+                    className="w-full sm:w-auto"
+                  >
+                    <RefreshCcw /> 恢复示例
+                  </Button>
+                  <Button
+                    size="lg"
+                    onClick={calculate}
+                    disabled={hasRegulatoryLimitViolation}
+                    className="w-full bg-teal-600 px-5 text-white hover:bg-teal-700 sm:w-auto"
+                  >
+                    {isRedemption ? '测算赎回后组合' : '计算最优配置'}{' '}
+                    <ArrowRight />
+                  </Button>
+                </div>
+              </div>
+            </>
+          ) : null}
+        </div>
+
+        {workspaceView === 'planner' ? (
+          <aside className="xl:self-start">
+            <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
+              <div className="flex items-start justify-between border-b border-slate-100 px-5 py-4">
+                <div>
+                  <p className="eyebrow">决策面板</p>
+                  <h2 className="mt-1 text-lg font-semibold">
+                    {isRedemption ? '赎回后组合快照' : '收益前沿与推荐配置'}
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {isRedemption
+                      ? '按现有组合同比例缩减；结果以最近一次测算为准'
+                      : '前沿随输入实时更新；配置结果以最近一次计算为准'}
+                  </p>
+                </div>
+                {hasRegulatoryLimitViolation ? (
+                  <Badge variant="destructive">监管/输入需修正</Badge>
+                ) : dirty ? (
+                  <Badge className="bg-amber-100 text-amber-800">
+                    待重新计算
+                  </Badge>
+                ) : result.ok ? (
+                  <Badge className="bg-emerald-100 text-emerald-800">
+                    <Check /> 约束通过
+                  </Badge>
+                ) : (
+                  <Badge variant="destructive">输入需调整</Badge>
+                )}
+              </div>
+
+              {isRedemption ? (
+                <div className="border-b border-slate-100 p-5">
+                  <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-4">
+                    <p className="eyebrow">赎回影响</p>
+                    <h3 className="mt-1 text-base font-semibold">
+                      同比例赎回不改变期限与收益指标
+                    </h3>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      本模式没有新的买入配置，因此不展示收益前沿或目标 YTM
+                      反推。交易后结果仅由赎回金额和当前组合快照决定。
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="border-b border-slate-100">
+                  <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
+                    <div>
+                      <p className="eyebrow">收益前沿</p>
+                      <h3 className="mt-1 flex items-center gap-2 text-base font-semibold">
+                        <TrendingUp className="size-4 text-teal-700" />
+                        多一天期限，换来多少收益
+                      </h3>
+                    </div>
+                    <div
+                      className="inline-flex rounded-xl bg-slate-100 p-1"
+                      role="tablist"
+                      aria-label="选择期限指标"
+                    >
+                      {(['wam', 'wal'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          id={`${mode}-frontier-tab`}
+                          type="button"
+                          role="tab"
+                          aria-selected={frontierMode === mode}
+                          aria-controls="frontier-panel"
+                          onClick={() => {
+                            setFrontierMode(mode);
+                            clearTargetOutcome();
+                          }}
+                          className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                            frontierMode === mode
+                              ? 'bg-white text-slate-950 shadow-sm'
+                              : 'text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          {mode.toUpperCase()} 曲线
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div
+                    id="frontier-panel"
+                    role="tabpanel"
+                    aria-labelledby={`${frontierMode}-frontier-tab`}
+                  >
+                    {hasHoldingsWorkspaceViolation ? (
+                      <div className="p-5">
+                        <Alert variant="destructive">
                           <AlertTriangle />
-                          <AlertTitle>
-                            仍有 {number(result.unallocated)} {amountUnit}{' '}
-                            未配置，期限或额度约束已限制继续投资。
-                          </AlertTitle>
+                          <div>
+                            <AlertTitle>
+                              请先修正“当前持仓”中的持仓或机构数据，随后再生成收益前沿。
+                            </AlertTitle>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="mt-3 border-red-300 bg-white text-red-800 hover:bg-red-50"
+                              onClick={() => setWorkspaceView('holdings')}
+                            >
+                              前往当前持仓处理 <ArrowRight />
+                            </Button>
+                          </div>
                         </Alert>
                       </div>
-                    ) : null}
+                    ) : (
+                      <FrontierPanel
+                        mode={frontierMode}
+                        points={frontiers[frontierMode]}
+                        currentLimit={
+                          frontierMode === 'wam'
+                            ? portfolio.maxWam
+                            : portfolio.maxWal
+                        }
+                        onSelect={(day) => selectFrontierDay(frontierMode, day)}
+                        targetYtm={targetYtm}
+                        targetYtmError={targetYtmError}
+                        targetYtmMessage={targetYtmMessage}
+                        onTargetYtmChange={(value) => {
+                          setTargetYtm(value);
+                          clearTargetOutcome();
+                        }}
+                        onSolveTarget={reverseTargetYtm}
+                        disabled={hasRegulatoryLimitViolation}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
 
-                    <div className="border-t border-slate-100">
-                      <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
-                        推荐金额与新增资金占比
-                      </h3>
-                      {result.allocations.length ||
-                      result.unallocated > EPSILON ? (
-                        <div className="divide-y divide-slate-100">
-                          {[...result.allocations]
-                            .sort(
-                              (a, b) => b.amount * b.rate - a.amount * a.rate,
-                            )
-                            .map((item) => (
-                              <div
-                                key={item.id}
-                                className="flex items-center justify-between gap-3 px-5 py-3"
-                              >
-                                <div className="min-w-0">
-                                  <p className="truncate text-sm font-medium">
-                                    {item.name}
+              <div className="border-b border-slate-100 px-5 py-4">
+                <p className="eyebrow">
+                  {isRedemption ? '测算结果' : '最优解'}
+                </p>
+                <h3 className="mt-1 text-base font-semibold">
+                  {isRedemption ? '同比例赎回结果' : '推荐配置'}
+                </h3>
+              </div>
+
+              {hasRegulatoryLimitViolation ? (
+                <div className="p-5">
+                  <Alert variant="destructive" className="p-4">
+                    <AlertTriangle />
+                    <AlertTitle>
+                      {isRedemption
+                        ? '赎回测算已暂时隐藏。请先修正标红字段，再重新测算。'
+                        : '推荐配置已暂时隐藏。请先修正标红字段，再重新计算。'}
+                    </AlertTitle>
+                  </Alert>
+                </div>
+              ) : result.ok ? (
+                <div
+                  aria-live="polite"
+                  className={dirty ? 'opacity-55 transition-opacity' : ''}
+                >
+                  {result.tradeMode === 'redemption' ? (
+                    <div className="px-5 pt-5">
+                      <div className="flex items-center justify-between gap-4 rounded-xl border border-teal-200 bg-teal-50/70 px-4 py-3">
+                        <div>
+                          <p className="text-xs font-medium text-slate-500">
+                            本次赎回比例
+                          </p>
+                          <p className="mt-0.5 text-sm text-slate-600">
+                            净赎回金额 ÷ 当前 AUM
+                          </p>
+                        </div>
+                        <p className="text-xl font-semibold tabular-nums text-teal-800">
+                          {percent(result.redemptionRatio * 100, 2)}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2">
+                    <Metric
+                      label="交易后 AUM"
+                      value={`${number(result.postAum)} ${amountUnit}`}
+                      detail={`${result.tradeMode === 'redemption' ? '赎回' : '新增'} ${number(result.transactionAmount)} ${amountUnit}`}
+                    />
+                    <Metric
+                      label="交易后 YTM"
+                      value={percent(result.postYtm, 3)}
+                      detail={
+                        result.tradeMode === 'redemption'
+                          ? '同比例赎回，与当前组合一致'
+                          : `新增资金 ${percent(result.allocationYield, 3)}`
+                      }
+                      accent
+                    />
+                    <Metric
+                      label="交易后 WAM"
+                      value={`${number(result.postWam)} 天`}
+                      detail={
+                        result.tradeMode === 'redemption'
+                          ? '同比例赎回，与当前组合一致'
+                          : `计算所用上限 ${number(result.appliedMaxWam)} 天`
+                      }
+                    />
+                    <Metric
+                      label="交易后 WAL"
+                      value={`${number(result.postWal)} 天`}
+                      detail={
+                        result.tradeMode === 'redemption'
+                          ? '同比例赎回，与当前组合一致'
+                          : `计算所用上限 ${number(result.appliedMaxWal)} 天`
+                      }
+                    />
+                  </div>
+
+                  {result.tradeMode === 'subscription' ? (
+                    <>
+                      {result.unallocated > EPSILON ? (
+                        <div className="px-5 pb-4">
+                          <Alert className="border-amber-200 bg-amber-50">
+                            <AlertTriangle />
+                            <AlertTitle>
+                              仍有 {number(result.unallocated)} {amountUnit}{' '}
+                              未配置，期限或额度约束已限制继续投资。
+                            </AlertTitle>
+                          </Alert>
+                        </div>
+                      ) : null}
+
+                      <div className="border-t border-slate-100">
+                        <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
+                          推荐金额与新增资金占比
+                        </h3>
+                        {result.allocations.length ||
+                        result.unallocated > EPSILON ? (
+                          <div className="divide-y divide-slate-100">
+                            {[...result.allocations]
+                              .sort(
+                                (a, b) => b.amount * b.rate - a.amount * a.rate,
+                              )
+                              .map((item) => (
+                                <div
+                                  key={item.id}
+                                  className="flex items-center justify-between gap-3 px-5 py-3"
+                                >
+                                  <div className="min-w-0">
+                                    <p className="truncate text-sm font-medium">
+                                      {item.name}
+                                    </p>
+                                    <p className="mt-0.5 text-xs text-slate-500">
+                                      {bankNames.get(item.bankId)} · WAM/WAL{' '}
+                                      {number(quoteWamDays(item), 0)}/
+                                      {number(item.walDays, 0)}天 ·{' '}
+                                      {percent(item.rate)}
+                                    </p>
+                                  </div>
+                                  <div className="text-right">
+                                    <p className="font-semibold tabular-nums">
+                                      {number(item.amount)}
+                                    </p>
+                                    <p className="text-xs text-slate-400">
+                                      {amountUnit} · 占新增资金{' '}
+                                      {result.transactionAmount > EPSILON
+                                        ? percent(
+                                            (item.amount /
+                                              result.transactionAmount) *
+                                              100,
+                                            1,
+                                          )
+                                        : '—'}
+                                    </p>
+                                  </div>
+                                </div>
+                              ))}
+                            {result.unallocated > EPSILON ? (
+                              <div className="flex items-center justify-between gap-3 px-5 py-3">
+                                <div>
+                                  <p className="text-sm font-medium">
+                                    保留现金
                                   </p>
                                   <p className="mt-0.5 text-xs text-slate-500">
-                                    {bankNames.get(item.bankId)} · WAM/WAL{' '}
-                                    {number(quoteWamDays(item), 0)}/
-                                    {number(item.walDays, 0)}天 ·{' '}
-                                    {percent(item.rate)}
+                                    零期限 · 零收益
                                   </p>
                                 </div>
                                 <div className="text-right">
                                   <p className="font-semibold tabular-nums">
-                                    {number(item.amount)}
+                                    {number(result.unallocated)}
                                   </p>
                                   <p className="text-xs text-slate-400">
                                     {amountUnit} · 占新增资金{' '}
                                     {result.transactionAmount > EPSILON
                                       ? percent(
-                                          (item.amount /
+                                          (result.unallocated /
                                             result.transactionAmount) *
                                             100,
                                           1,
@@ -3818,163 +3955,141 @@ export default function Home() {
                                   </p>
                                 </div>
                               </div>
-                            ))}
-                          {result.unallocated > EPSILON ? (
-                            <div className="flex items-center justify-between gap-3 px-5 py-3">
-                              <div>
-                                <p className="text-sm font-medium">保留现金</p>
-                                <p className="mt-0.5 text-xs text-slate-500">
-                                  零期限 · 零收益
-                                </p>
-                              </div>
-                              <div className="text-right">
-                                <p className="font-semibold tabular-nums">
-                                  {number(result.unallocated)}
-                                </p>
-                                <p className="text-xs text-slate-400">
-                                  {amountUnit} · 占新增资金{' '}
-                                  {result.transactionAmount > EPSILON
-                                    ? percent(
-                                        (result.unallocated /
-                                          result.transactionAmount) *
-                                          100,
-                                        1,
-                                      )
-                                    : '—'}
-                                </p>
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <p className="px-5 pb-4 text-sm text-slate-500">
-                          当前约束下没有正收益配置。
+                            ) : null}
+                          </div>
+                        ) : (
+                          <p className="px-5 pb-4 text-sm text-slate-500">
+                            当前约束下没有正收益配置。
+                          </p>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="border-t border-slate-100 px-5 py-4">
+                        <p className="text-sm font-semibold text-slate-800">
+                          按比例缩减当前持仓
                         </p>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="border-t border-slate-100 px-5 py-4">
-                      <p className="text-sm font-semibold text-slate-800">
-                        按比例缩减当前持仓
-                      </p>
-                      <p className="mt-1 text-sm leading-6 text-slate-500">
-                        下列金额来自当前持仓底表，合计等于本次净赎回金额；这是同比例情景，不代表赎回优先级。
-                      </p>
-                      <p className="mt-1 text-xs leading-5 text-slate-400">
-                        明细按当前金额单位四舍五入展示，计算与合计使用未舍入数值。
-                      </p>
-                    </div>
-                    <div className="divide-y divide-slate-100 border-t border-slate-100">
-                      {result.holdings.map((holding) => (
-                        <div
-                          key={holding.id}
-                          className="flex flex-col gap-2 px-5 py-3 sm:flex-row sm:items-center sm:justify-between"
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-slate-800">
-                              {holding.name}
-                            </p>
-                            <p className="mt-0.5 text-xs text-slate-500">
-                              {holding.bankId === null
-                                ? '不计入单一实体集中度'
-                                : (bankNames.get(holding.bankId) ??
-                                  '机构待修正')}
-                            </p>
+                        <p className="mt-1 text-sm leading-6 text-slate-500">
+                          下列金额来自当前持仓底表，合计等于本次净赎回金额；这是同比例情景，不代表赎回优先级。
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-slate-400">
+                          明细按当前金额单位四舍五入展示，计算与合计使用未舍入数值。
+                        </p>
+                      </div>
+                      <div className="divide-y divide-slate-100 border-t border-slate-100">
+                        {result.holdings.map((holding) => (
+                          <div
+                            key={holding.id}
+                            className="flex flex-col gap-2 px-5 py-3 sm:flex-row sm:items-center sm:justify-between"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-slate-800">
+                                {holding.name}
+                              </p>
+                              <p className="mt-0.5 text-xs text-slate-500">
+                                {holding.bankId === null
+                                  ? '不计入单一实体集中度'
+                                  : (bankNames.get(holding.bankId) ??
+                                    '机构待修正')}
+                              </p>
+                            </div>
+                            <div className="text-left sm:text-right">
+                              <p className="text-sm font-semibold tabular-nums text-teal-700">
+                                赎回 {number(holding.redeemed)} {amountUnit}
+                              </p>
+                              <p className="mt-0.5 text-xs text-slate-400">
+                                剩余 {number(holding.finalAmount)} {amountUnit}
+                              </p>
+                            </div>
                           </div>
-                          <div className="text-left sm:text-right">
-                            <p className="text-sm font-semibold tabular-nums text-teal-700">
-                              赎回 {number(holding.redeemed)} {amountUnit}
-                            </p>
-                            <p className="mt-0.5 text-xs text-slate-400">
-                              剩余 {number(holding.finalAmount)} {amountUnit}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
+                        ))}
+                      </div>
+                    </>
+                  )}
 
-                <div className="border-t border-slate-100">
-                  <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
-                    <Landmark className="size-4 text-teal-700" />{' '}
-                    {result.tradeMode === 'redemption'
-                      ? '机构同比例赎回明细'
-                      : '交易后机构占比'}
-                  </h3>
-                  <div className="space-y-4 px-5 pb-5">
-                    {result.banks.map((bank) => {
-                      const used =
-                        bank.limitPct > 0
-                          ? Math.min(100, (bank.finalPct / bank.limitPct) * 100)
-                          : 0;
-                      const atLimit = bank.finalPct >= bank.limitPct - 1e-7;
-                      return (
-                        <div key={bank.id}>
-                          <div className="mb-1.5 flex flex-col gap-1 text-sm sm:flex-row sm:justify-between">
-                            <span className="font-medium text-slate-700">
-                              {bank.name}
-                            </span>
-                            <span>
-                              {percent(bank.finalPct)} /{' '}
-                              {percent(bank.limitPct)}
-                            </span>
+                  <div className="border-t border-slate-100">
+                    <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
+                      <Landmark className="size-4 text-teal-700" />{' '}
+                      {result.tradeMode === 'redemption'
+                        ? '机构同比例赎回明细'
+                        : '交易后机构占比'}
+                    </h3>
+                    <div className="space-y-4 px-5 pb-5">
+                      {result.banks.map((bank) => {
+                        const used =
+                          bank.limitPct > 0
+                            ? Math.min(
+                                100,
+                                (bank.finalPct / bank.limitPct) * 100,
+                              )
+                            : 0;
+                        const atLimit = bank.finalPct >= bank.limitPct - 1e-7;
+                        return (
+                          <div key={bank.id}>
+                            <div className="mb-1.5 flex flex-col gap-1 text-sm sm:flex-row sm:justify-between">
+                              <span className="font-medium text-slate-700">
+                                {bank.name}
+                              </span>
+                              <span>
+                                {percent(bank.finalPct)} /{' '}
+                                {percent(bank.limitPct)}
+                              </span>
+                            </div>
+                            <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                              <div
+                                className={`h-full rounded-full ${
+                                  atLimit ? 'bg-amber-500' : 'bg-teal-500'
+                                }`}
+                                style={{ width: `${used}%` }}
+                              />
+                            </div>
+                            <div className="mt-1 flex flex-col gap-1 text-xs text-slate-400 sm:flex-row sm:justify-between">
+                              <span>
+                                {result.tradeMode === 'redemption' ? (
+                                  <>
+                                    赎回{' '}
+                                    {number(Math.abs(bank.transactionChange))}{' '}
+                                    {amountUnit} · 剩余{' '}
+                                    {number(bank.finalExposure)} {amountUnit}
+                                  </>
+                                ) : (
+                                  <>
+                                    新增 {number(bank.transactionChange)}{' '}
+                                    {amountUnit}
+                                  </>
+                                )}
+                              </span>
+                              <span>
+                                {atLimit
+                                  ? '已触及上限'
+                                  : `余量 ${number(bank.remaining)} ${amountUnit}`}
+                              </span>
+                            </div>
                           </div>
-                          <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                            <div
-                              className={`h-full rounded-full ${
-                                atLimit ? 'bg-amber-500' : 'bg-teal-500'
-                              }`}
-                              style={{ width: `${used}%` }}
-                            />
-                          </div>
-                          <div className="mt-1 flex flex-col gap-1 text-xs text-slate-400 sm:flex-row sm:justify-between">
-                            <span>
-                              {result.tradeMode === 'redemption' ? (
-                                <>
-                                  赎回{' '}
-                                  {number(Math.abs(bank.transactionChange))}{' '}
-                                  {amountUnit} · 剩余{' '}
-                                  {number(bank.finalExposure)} {amountUnit}
-                                </>
-                              ) : (
-                                <>
-                                  新增 {number(bank.transactionChange)}{' '}
-                                  {amountUnit}
-                                </>
-                              )}
-                            </span>
-                            <span>
-                              {atLimit
-                                ? '已触及上限'
-                                : `余量 ${number(bank.remaining)} ${amountUnit}`}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ) : (
-              <div aria-live="polite" className="p-5">
-                <Alert variant="destructive" className="p-4">
-                  <AlertTriangle />
-                  <div>
-                    <AlertTitle>当前输入没有可行解</AlertTitle>
-                    <ul className="mt-2 list-disc space-y-1 pl-4 text-sm">
-                      {result.messages.map((message) => (
-                        <li key={message}>{message}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </Alert>
-              </div>
-            )}
-          </section>
-        </aside>
+              ) : (
+                <div aria-live="polite" className="p-5">
+                  <Alert variant="destructive" className="p-4">
+                    <AlertTriangle />
+                    <div>
+                      <AlertTitle>当前输入没有可行解</AlertTitle>
+                      <ul className="mt-2 list-disc space-y-1 pl-4 text-sm">
+                        {result.messages.map((message) => (
+                          <li key={message}>{message}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </Alert>
+                </div>
+              )}
+            </section>
+          </aside>
+        ) : null}
       </div>
     </main>
   );
