@@ -90,6 +90,9 @@ type Quote = {
 type SuccessResult = {
   ok: true;
   postAum: number;
+  newMoneyAmount: number;
+  appliedMaxWam: number;
+  appliedMaxWal: number;
   postYtm: number;
   postWam: number;
   postWal: number;
@@ -118,7 +121,20 @@ type FrontierPoint = {
   wam: number;
   wal: number;
   unallocated: number;
+  bindingConstraints: string[];
+  isPlateauStart: boolean;
 };
+
+type ReverseYtmResult =
+  | {
+      ok: true;
+      limit: number;
+      result: SuccessResult;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
 
 type WebModelContext = {
   registerTool: (
@@ -263,7 +279,7 @@ function bankConcentrationError(value: number) {
   if (!Number.isFinite(value)) return '集中度上限必须是有效数字。';
   if (value < 0) return '集中度上限不得低于 0%。';
   if (value > SFC_MAX_BANK_CONCENTRATION_PCT) {
-    return 'SFC 对银行类单一实体的最高例外上限为 25%；一般上限仍为 10%。';
+    return 'SFC 对单一实体的最高例外上限为 25%；一般上限仍为 10%。';
   }
   return null;
 }
@@ -276,7 +292,7 @@ function bankConcentrationNotice(value: number) {
   ) {
     return null;
   }
-  return '超过一般 10% 上限：请确认该银行满足 SFC 8.2(g)(i) 例外条件。';
+  return '超过一般 10% 上限：仅适用于经合规确认符合 SFC 8.2(g)(i) 条件的实质金融机构。';
 }
 
 function quoteWamDays(quote: Quote) {
@@ -392,17 +408,17 @@ function optimise(
 
   const bankIds = new Set(banks.map((bank) => bank.id));
   banks.forEach((bank) => {
-    if (!bank.name.trim()) errors.push('银行名称不能为空。');
+    if (!bank.name.trim()) errors.push('机构名称不能为空。');
     if (!Number.isFinite(bank.currentExposure) || bank.currentExposure < 0) {
-      errors.push(`${bank.name || '某银行'}的当前持有金额无效。`);
+      errors.push(`${bank.name || '某机构'}的当前持有金额无效。`);
     }
     const concentrationError = bankConcentrationError(bank.limitPct);
     if (concentrationError) {
-      errors.push(`${bank.name || '某银行'}：${concentrationError}`);
+      errors.push(`${bank.name || '某机构'}：${concentrationError}`);
     }
     if (bank.currentExposure > (postAum * bank.limitPct) / 100 + EPSILON) {
       errors.push(
-        `${bank.name || '某银行'}现有敞口已超过交易后上限，新增配置无法修复。`,
+        `${bank.name || '某机构'}现有敞口已超过交易后上限，新增配置无法修复。`,
       );
     }
   });
@@ -410,7 +426,7 @@ function optimise(
   quotes.forEach((quote) => {
     if (!quote.name.trim()) errors.push('产品名称不能为空。');
     if (!bankIds.has(quote.bankId)) {
-      errors.push(`${quote.name || '某产品'}没有对应的银行。`);
+      errors.push(`${quote.name || '某产品'}没有对应的机构。`);
     }
     if (
       quote.wamDays !== null &&
@@ -507,6 +523,9 @@ function optimise(
   return {
     ok: true,
     postAum,
+    newMoneyAmount: portfolio.cash,
+    appliedMaxWam: effectiveMaxWam,
+    appliedMaxWal: effectiveMaxWal,
     postYtm: (portfolio.aum * portfolio.ytm + interest) / postAum,
     postWam: (portfolio.aum * portfolio.wam + wamDuration) / postAum,
     postWal: (portfolio.aum * portfolio.wal + walDuration) / postAum,
@@ -534,6 +553,61 @@ function optimise(
   };
 }
 
+function describeBindingConstraints(
+  outcome: SuccessResult,
+  portfolio: Portfolio,
+  quotes: Quote[],
+) {
+  const constraints: string[] = [];
+  const effectiveMaxWam = Math.min(
+    portfolio.maxWam ?? SFC_MAX_WAM_DAYS,
+    SFC_MAX_WAM_DAYS,
+  );
+  const effectiveMaxWal = Math.min(
+    portfolio.maxWal ?? SFC_MAX_WAL_DAYS,
+    SFC_MAX_WAL_DAYS,
+  );
+  if (effectiveMaxWam - outcome.postWam <= 0.02) {
+    constraints.push(`WAM ${number(effectiveMaxWam)} 天上限`);
+  }
+  if (effectiveMaxWal - outcome.postWal <= 0.02) {
+    constraints.push(`WAL ${number(effectiveMaxWal)} 天上限`);
+  }
+
+  const amountTolerance = Math.max(0.001, outcome.postAum * 0.00001);
+  const quotedBankIds = new Set(quotes.map((quote) => quote.bankId));
+  outcome.banks.forEach((bank) => {
+    if (quotedBankIds.has(bank.id) && bank.remaining <= amountTolerance) {
+      constraints.push(`${bank.name}集中度 ${percent(bank.limitPct)}`);
+    }
+  });
+  outcome.allocations.forEach((allocation) => {
+    const quote = quotes.find((item) => item.id === allocation.id);
+    if (quote && quote.cap - allocation.amount <= amountTolerance) {
+      constraints.push(`「${allocation.name}」报价额度`);
+    }
+  });
+  return constraints;
+}
+
+function makeFrontierPoint(
+  day: number,
+  outcome: SuccessResult,
+  portfolio: Portfolio,
+  quotes: Quote[],
+  isPlateauStart = false,
+): FrontierPoint {
+  return {
+    day,
+    ytm: outcome.postYtm,
+    wam: outcome.postWam,
+    wal: outcome.postWal,
+    unallocated: outcome.unallocated,
+    bindingConstraints: describeBindingConstraints(outcome, portfolio, quotes),
+    isPlateauStart,
+  };
+}
+
 function buildFrontier(
   mode: FrontierMode,
   portfolio: Portfolio,
@@ -549,27 +623,163 @@ function buildFrontier(
       : (portfolio.aum * portfolio.wal) / postAum;
   const regulatoryCeiling =
     mode === 'wam' ? SFC_MAX_WAM_DAYS : SFC_MAX_WAL_DAYS;
+  if (!Number.isFinite(minimum) || minimum > regulatoryCeiling + EPSILON) {
+    return [];
+  }
   const firstDay = Math.max(0, Math.ceil(minimum - EPSILON));
-  if (firstDay > regulatoryCeiling) return [];
 
   const points: FrontierPoint[] = [];
+  const minimumCandidate: Portfolio = {
+    ...portfolio,
+    ...(mode === 'wam' ? { maxWam: minimum } : { maxWal: minimum }),
+  };
+  const minimumOutcome = optimise(minimumCandidate, banks, quotes);
+  if (minimumOutcome.ok) {
+    points.push(
+      makeFrontierPoint(minimum, minimumOutcome, minimumCandidate, quotes),
+    );
+  }
+
   for (let day = firstDay; day <= regulatoryCeiling; day += 1) {
+    if (points.some((point) => Math.abs(point.day - day) <= EPSILON)) continue;
     const candidate: Portfolio = {
       ...portfolio,
       ...(mode === 'wam' ? { maxWam: day } : { maxWal: day }),
     };
     const outcome = optimise(candidate, banks, quotes);
     if (outcome.ok) {
-      points.push({
-        day,
-        ytm: outcome.postYtm,
-        wam: outcome.postWam,
-        wal: outcome.postWal,
-        unallocated: outcome.unallocated,
-      });
+      points.push(makeFrontierPoint(day, outcome, candidate, quotes));
     }
   }
+
+  const last = points.at(-1);
+  if (!last) return points;
+
+  let lowLimit = minimum;
+  let highLimit = regulatoryCeiling;
+  for (let iteration = 0; iteration < 48; iteration += 1) {
+    const middle = (lowLimit + highLimit) / 2;
+    const candidate: Portfolio = {
+      ...portfolio,
+      ...(mode === 'wam' ? { maxWam: middle } : { maxWal: middle }),
+    };
+    const outcome = optimise(candidate, banks, quotes);
+    if (outcome.ok && last.ytm - outcome.postYtm <= 1e-7) {
+      highLimit = middle;
+    } else {
+      lowLimit = middle;
+    }
+  }
+
+  const plateauCandidate: Portfolio = {
+    ...portfolio,
+    ...(mode === 'wam' ? { maxWam: highLimit } : { maxWal: highLimit }),
+  };
+  const plateauOutcome = optimise(plateauCandidate, banks, quotes);
+  if (plateauOutcome.ok) {
+    const plateauPoint = makeFrontierPoint(
+      highLimit,
+      plateauOutcome,
+      plateauCandidate,
+      quotes,
+      true,
+    );
+    const existingIndex = points.findIndex(
+      (point) => Math.abs(point.day - highLimit) < 0.000001,
+    );
+    if (existingIndex >= 0) {
+      points[existingIndex] = {
+        ...plateauPoint,
+        day: points[existingIndex].day,
+      };
+    } else {
+      points.push(plateauPoint);
+    }
+    points.sort((left, right) => left.day - right.day);
+  }
   return points;
+}
+
+function solveTargetYtm(
+  mode: FrontierMode,
+  targetYtm: number,
+  portfolio: Portfolio,
+  banks: Bank[],
+  quotes: Quote[],
+): ReverseYtmResult {
+  const label = mode.toUpperCase();
+  const ceiling = mode === 'wam' ? SFC_MAX_WAM_DAYS : SFC_MAX_WAL_DAYS;
+  const withLimit = (limit: number): Portfolio => ({
+    ...portfolio,
+    ...(mode === 'wam' ? { maxWam: limit } : { maxWal: limit }),
+  });
+
+  if (!Number.isFinite(targetYtm)) {
+    return { ok: false, message: '目标 YTM 必须是有效数字。' };
+  }
+
+  const upper = optimise(withLimit(ceiling), banks, quotes);
+  if (!upper.ok) {
+    return {
+      ok: false,
+      message: upper.messages[0] ?? '当前输入没有可行解。',
+    };
+  }
+
+  const yieldTolerance = 1e-7;
+  if (targetYtm > upper.postYtm + yieldTolerance) {
+    return {
+      ok: false,
+      message: `在 SFC ${label} ≤ ${ceiling} 天及另一项当前约束下，最高只能达到 ${percent(upper.postYtm, 3)}。`,
+    };
+  }
+
+  const currentDuration = mode === 'wam' ? portfolio.wam : portfolio.wal;
+  const lowerBound = Math.max(
+    0,
+    (portfolio.aum * currentDuration) / upper.postAum,
+  );
+  const lower = optimise(withLimit(lowerBound), banks, quotes);
+  if (lower.ok && lower.postYtm + yieldTolerance >= targetYtm) {
+    return { ok: true, limit: lowerBound, result: lower };
+  }
+
+  let lowLimit = lowerBound;
+  let highLimit = ceiling;
+  for (let iteration = 0; iteration < 52; iteration += 1) {
+    const middle = (lowLimit + highLimit) / 2;
+    const outcome = optimise(withLimit(middle), banks, quotes);
+    if (outcome.ok && outcome.postYtm + yieldTolerance >= targetYtm) {
+      highLimit = middle;
+    } else {
+      lowLimit = middle;
+    }
+  }
+
+  let displayedLimit = Math.min(
+    ceiling,
+    Math.ceil((highLimit - EPSILON) * 100) / 100,
+  );
+  let displayedResult = optimise(withLimit(displayedLimit), banks, quotes);
+  if (
+    !displayedResult.ok ||
+    displayedResult.postYtm + yieldTolerance < targetYtm
+  ) {
+    displayedLimit = Math.min(ceiling, displayedLimit + 0.01);
+    displayedResult = optimise(withLimit(displayedLimit), banks, quotes);
+  }
+  if (
+    !displayedResult.ok ||
+    displayedResult.postYtm + yieldTolerance < targetYtm
+  ) {
+    return {
+      ok: false,
+      message:
+        '目标非常接近边界，当前精度下无法稳定生成配置，请略微降低目标 YTM。',
+    };
+  }
+
+  return { ok: true, limit: displayedLimit, result: displayedResult };
 }
 
 function number(value: number, digits = 2) {
@@ -701,6 +911,7 @@ function NumberField({
   max,
   error,
   warning,
+  warningTone = 'yellow',
 }: {
   label: string;
   value: number | null;
@@ -711,6 +922,7 @@ function NumberField({
   max?: number;
   error?: string | null;
   warning?: string | null;
+  warningTone?: 'yellow' | 'red';
 }) {
   const fallbackError =
     value === null
@@ -721,9 +933,19 @@ function NumberField({
         ? `${label}必须是有效数字。`
         : null;
   const validationError = error ?? fallbackError;
+  const isRed = Boolean(validationError || (warning && warningTone === 'red'));
+  const isYellow = Boolean(warning && warningTone === 'yellow' && !isRed);
 
   return (
-    <label className="grid gap-1.5">
+    <label
+      className={`grid gap-1.5 rounded-xl border p-2 ${
+        isRed
+          ? 'border-red-300 bg-red-50'
+          : isYellow
+            ? 'border-yellow-300 bg-yellow-50'
+            : 'border-transparent'
+      }`}
+    >
       <span className="flex justify-between text-sm font-medium text-slate-700">
         {label}
         {optional ? (
@@ -738,10 +960,12 @@ function NumberField({
           value={value}
           onValueChange={onChange}
           aria-invalid={validationError ? true : undefined}
-          className={`h-10 rounded-xl bg-white pr-12 text-base ${
-            warning && !validationError
-              ? 'border-amber-400 focus-visible:border-amber-500 focus-visible:ring-amber-500/15'
-              : 'border-slate-200 focus-visible:border-teal-600 focus-visible:ring-teal-600/15'
+          className={`h-10 rounded-xl pr-12 text-base ${
+            isRed
+              ? 'border-red-300 bg-red-50 text-red-950 focus-visible:border-red-500 focus-visible:ring-red-500/15'
+              : isYellow
+                ? 'border-yellow-300 bg-yellow-50 text-slate-950 focus-visible:border-yellow-500 focus-visible:ring-yellow-500/15'
+                : 'border-slate-200 bg-white focus-visible:border-teal-600 focus-visible:ring-teal-600/15'
           }`}
         />
         <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-slate-400">
@@ -753,7 +977,12 @@ function NumberField({
           {validationError}
         </span>
       ) : warning ? (
-        <span aria-live="polite" className="text-xs font-medium text-amber-700">
+        <span
+          aria-live="polite"
+          className={`text-xs font-medium ${
+            warningTone === 'red' ? 'text-red-700' : 'text-yellow-800'
+          }`}
+        >
           {warning}
         </span>
       ) : null}
@@ -802,14 +1031,86 @@ function FrontierPanel({
   currentLimit,
   otherLimit,
   onSelect,
+  targetYtm,
+  targetYtmError,
+  targetYtmMessage,
+  onTargetYtmChange,
+  onSolveTarget,
+  disabled,
 }: {
   mode: FrontierMode;
   points: FrontierPoint[];
   currentLimit: number | null;
   otherLimit: number | null;
   onSelect: (day: number) => void;
+  targetYtm: number | null;
+  targetYtmError: string | null;
+  targetYtmMessage: string | null;
+  onTargetYtmChange: (value: number | null) => void;
+  onSolveTarget: () => void;
+  disabled?: boolean;
 }) {
   const label = mode.toUpperCase();
+  const targetControl = (
+    <form
+      className="mt-4 rounded-2xl border border-teal-100 bg-teal-50/60 p-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSolveTarget();
+      }}
+    >
+      <div className="flex flex-wrap items-end gap-3">
+        <label htmlFor="target-ytm" className="min-w-44 flex-1">
+          <span className="mb-1.5 block text-sm font-semibold text-slate-800">
+            目标交易后 YTM
+          </span>
+          <span className="relative block">
+            <EditableNumberInput
+              id="target-ytm"
+              aria-label="目标交易后YTM百分比"
+              aria-invalid={targetYtmError ? true : undefined}
+              value={targetYtm}
+              step="0.001"
+              disabled={disabled}
+              placeholder="例如 3.000"
+              onValueChange={onTargetYtmChange}
+              className={`h-10 rounded-xl pr-9 text-base ${
+                targetYtmError
+                  ? 'border-red-300 bg-red-50 text-red-950'
+                  : 'border-teal-200 bg-white focus-visible:border-teal-600 focus-visible:ring-teal-600/15'
+              }`}
+            />
+            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-slate-400">
+              %
+            </span>
+          </span>
+        </label>
+        <Button
+          type="submit"
+          disabled={disabled || targetYtm === null}
+          className="bg-teal-600 text-white hover:bg-teal-700"
+        >
+          反推配置 <ArrowRight />
+        </Button>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-slate-500">
+        目标按“至少达到”处理；系统反推所选 {label}{' '}
+        的最短上限和产品比例，另一项当前上限及 SFC 硬上限继续生效。
+      </p>
+      {targetYtmError ? (
+        <p role="alert" className="mt-2 text-xs font-medium text-red-700">
+          {targetYtmError}
+        </p>
+      ) : targetYtmMessage ? (
+        <p
+          aria-live="polite"
+          className="mt-2 text-xs font-medium text-teal-800"
+        >
+          {targetYtmMessage}
+        </p>
+      ) : null}
+    </form>
+  );
 
   if (!points.length) {
     return (
@@ -821,6 +1122,7 @@ function FrontierPanel({
             区间内没有可行点，请先放宽另一项期限约束或检查输入。
           </AlertTitle>
         </Alert>
+        {targetControl}
       </div>
     );
   }
@@ -828,11 +1130,17 @@ function FrontierPanel({
   const first = points[0]!;
   const last = points[points.length - 1]!;
   const gainBps = Math.max(0, (last.ytm - first.ytm) * 100);
-  const plateau =
-    points.find((point) => Math.abs(last.ytm - point.ytm) <= 0.00001) ?? last;
+  const plateau = points.find((point) => point.isPlateauStart) ?? last;
+  const hasPlateau = plateau.day < last.day - 0.001;
+  const plateauReasons = plateau.bindingConstraints.filter(
+    (constraint) => !constraint.startsWith(label),
+  );
+  const plateauReasonText = plateauReasons.length
+    ? plateauReasons.join('、')
+    : '当前可投报价本身的收益上限';
 
   return (
-    <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1fr)_220px]">
+    <div className="grid gap-5 p-5">
       <div className="min-w-0">
         <ChartContainer
           config={frontierChartConfig}
@@ -876,7 +1184,7 @@ function FrontierPanel({
                   formatter={(value, _name, item) => (
                     <div className="grid min-w-36 gap-1">
                       <span className="text-slate-500">
-                        {label} 上限 {item.payload.day} 天
+                        {label} 上限 {number(item.payload.day)} 天
                       </span>
                       <span className="font-semibold text-slate-950">
                         最高 YTM {percent(Number(value), 3)}
@@ -889,6 +1197,11 @@ function FrontierPanel({
                         较最紧点 +
                         {number((item.payload.ytm - first.ytm) * 100, 1)} bp
                       </span>
+                      {item.payload.bindingConstraints?.length ? (
+                        <span className="max-w-56 text-slate-500">
+                          约束：{item.payload.bindingConstraints.join('、')}
+                        </span>
+                      ) : null}
                     </div>
                   )}
                 />
@@ -897,12 +1210,42 @@ function FrontierPanel({
             {currentLimit !== null ? (
               <ReferenceLine
                 x={currentLimit}
+                ifOverflow="extendDomain"
                 stroke="#f59e0b"
                 strokeDasharray="5 4"
                 label={{
                   value: '当前选择',
                   position: 'insideTopRight',
                   fill: '#b45309',
+                  fontSize: 12,
+                }}
+              />
+            ) : null}
+            {hasPlateau ? (
+              <ReferenceLine
+                x={plateau.day}
+                stroke="#64748b"
+                strokeDasharray="3 4"
+                label={{
+                  value: `平台约 ${number(plateau.day)} 天`,
+                  position: 'insideTopLeft',
+                  fill: '#475569',
+                  fontSize: 12,
+                }}
+              />
+            ) : null}
+            {targetYtm !== null &&
+            Number.isFinite(targetYtm) &&
+            targetYtm >= first.ytm - 0.0001 &&
+            targetYtm <= last.ytm + 0.0001 ? (
+              <ReferenceLine
+                y={targetYtm}
+                stroke="#0f766e"
+                strokeDasharray="3 4"
+                label={{
+                  value: '目标 YTM',
+                  position: 'insideBottomLeft',
+                  fill: '#0f766e',
                   fontSize: 12,
                 }}
               />
@@ -925,6 +1268,7 @@ function FrontierPanel({
         <p className="mt-1 text-center text-xs text-slate-400">
           点击曲线上的位置，即可采用对应的 {label} 上限并重新计算
         </p>
+        {targetControl}
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
@@ -936,7 +1280,31 @@ function FrontierPanel({
             ? 'WAM 衡量利率重定价敏感度；浮息工具可使用较短的获认可重定价天数，但仍会消耗 WAL。'
             : 'WAL 按最终本金到期计量；利率重定价不会在本模型中缩短 WAL。'}
         </p>
-        <dl className="mt-4 space-y-3 border-t border-slate-200 pt-4 text-sm">
+        <div className="mt-3 rounded-xl border border-yellow-200 bg-yellow-50 p-3">
+          <p className="text-sm font-semibold text-slate-900">
+            {hasPlateau ? '为什么之后不再增加？' : '尚未进入收益平台'}
+          </p>
+          <p className="mt-1 text-sm leading-6 text-slate-700">
+            {hasPlateau ? (
+              <>
+                按当前数值精度，约 {number(plateau.day)} 天起，最优配置的实际{' '}
+                {label} 已固定在{' '}
+                {number(mode === 'wam' ? plateau.wam : plateau.wal)}{' '}
+                天。继续提高 {label}{' '}
+                上限只会增加未使用的期限空间，并不会找到更高收益的合规配置。平台配置触及的其他边界包括：
+                {plateauReasonText}。
+              </>
+            ) : (
+              <>
+                在当前展示区间内，放宽 {label}{' '}
+                仍能提高最高收益，尚未出现平台；曲线止于 SFC {label} ≤{' '}
+                {mode === 'wam' ? SFC_MAX_WAM_DAYS : SFC_MAX_WAL_DAYS}{' '}
+                天的硬上限。
+              </>
+            )}
+          </p>
+        </div>
+        <dl className="mt-4 grid gap-3 border-t border-slate-200 pt-4 text-sm sm:grid-cols-2">
           <div className="flex justify-between gap-3">
             <dt className="text-slate-500">展示区间</dt>
             <dd className="font-medium">
@@ -951,7 +1319,11 @@ function FrontierPanel({
           </div>
           <div className="flex justify-between gap-3">
             <dt className="text-slate-500">收益平台</dt>
-            <dd className="font-medium">{plateau.day} 天起</dd>
+            <dd className="font-medium">
+              {hasPlateau
+                ? `数值精度内约 ${number(plateau.day)} 天起`
+                : '区间内未出现'}
+            </dd>
           </div>
           <div className="flex justify-between gap-3">
             <dt className="text-slate-500">另一约束</dt>
@@ -987,6 +1359,9 @@ export default function Home() {
   );
   const [dirty, setDirty] = useState(false);
   const [frontierMode, setFrontierMode] = useState<FrontierMode>('wam');
+  const [targetYtm, setTargetYtm] = useState<number | null>(null);
+  const [targetYtmError, setTargetYtmError] = useState<string | null>(null);
+  const [targetYtmMessage, setTargetYtmMessage] = useState<string | null>(null);
   const stateRef = useRef({ portfolio, banks, quotes });
 
   useEffect(() => {
@@ -1035,7 +1410,7 @@ export default function Home() {
         name: 'calculate_current_mmf_allocation',
         title: '计算当前 MMF 配置',
         description:
-          '使用页面当前填写的组合、银行敞口和报价，计算并显示最高收益配置。',
+          '使用页面当前填写的组合、机构敞口和报价，计算并显示最高收益配置。',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -1106,12 +1481,47 @@ export default function Home() {
   );
   const newBankLimitError = bankConcentrationError(newBankLimitPct);
   const newBankLimitNotice = bankConcentrationNotice(newBankLimitPct);
+  const bankExposureInvalidIds = new Set(
+    banks
+      .filter(
+        (bank) =>
+          !Number.isFinite(bank.currentExposure) || bank.currentExposure < 0,
+      )
+      .map((bank) => bank.id),
+  );
+  const currentBankExposureBreachIds = new Set(
+    banks
+      .filter(
+        (bank) =>
+          Number.isFinite(portfolio.aum) &&
+          portfolio.aum > 0 &&
+          !bankConcentrationError(bank.limitPct) &&
+          Number.isFinite(bank.currentExposure) &&
+          bank.currentExposure >
+            (portfolio.aum * bank.limitPct) / 100 + EPSILON,
+      )
+      .map((bank) => bank.id),
+  );
+  const bankExposureBreachIds = new Set(
+    banks
+      .filter(
+        (bank) =>
+          Number.isFinite(postAum) &&
+          postAum > 0 &&
+          !bankConcentrationError(bank.limitPct) &&
+          Number.isFinite(bank.currentExposure) &&
+          bank.currentExposure > (postAum * bank.limitPct) / 100 + EPSILON,
+      )
+      .map((bank) => bank.id),
+  );
   const hasRegulatoryLimitViolation = Boolean(
     currentWamInputError ||
     currentWalInputError ||
     maxWamError ||
     maxWalError ||
-    banks.some((bank) => bankConcentrationError(bank.limitPct)),
+    banks.some((bank) => bankConcentrationError(bank.limitPct)) ||
+    bankExposureInvalidIds.size ||
+    bankExposureBreachIds.size,
   );
   const availableBankTemplates = useMemo(
     () =>
@@ -1131,18 +1541,24 @@ export default function Home() {
     }),
     [portfolio, banks, quotes],
   );
+  const clearTargetOutcome = () => {
+    setTargetYtmError(null);
+    setTargetYtmMessage(null);
+  };
   const updatePortfolio = <K extends keyof Portfolio>(
     key: K,
     value: Portfolio[K],
   ) => {
     setPortfolio((old) => ({ ...old, [key]: value }));
     setDirty(true);
+    clearTargetOutcome();
   };
   const updateBank = (bankId: string, patch: Partial<Bank>) => {
     setBanks((old) =>
       old.map((bank) => (bank.id === bankId ? { ...bank, ...patch } : bank)),
     );
     setDirty(true);
+    clearTargetOutcome();
   };
   const updateQuote = (quoteId: string, patch: Partial<Quote>) => {
     setQuotes((old) =>
@@ -1151,6 +1567,7 @@ export default function Home() {
       ),
     );
     setDirty(true);
+    clearTargetOutcome();
   };
   const addBankFromLibrary = () => {
     const template = availableBankTemplates.find(
@@ -1169,6 +1586,7 @@ export default function Home() {
     ]);
     setSelectedBankTemplateId('');
     setDirty(true);
+    clearTargetOutcome();
   };
   const saveBankToLibrary = () => {
     const name = newBankName.trim();
@@ -1204,6 +1622,7 @@ export default function Home() {
   const calculate = () => {
     setResult(optimise(portfolio, banks, quotes));
     setDirty(false);
+    clearTargetOutcome();
   };
   const reset = () => {
     setPortfolio(initialPortfolio);
@@ -1211,6 +1630,9 @@ export default function Home() {
     setQuotes(initialQuotes);
     setResult(optimise(initialPortfolio, initialBanks, initialQuotes));
     setDirty(false);
+    setTargetYtm(null);
+    setTargetYtmError(null);
+    setTargetYtmMessage(null);
   };
   const selectFrontierDay = (mode: FrontierMode, day: number) => {
     const nextPortfolio = {
@@ -1220,6 +1642,41 @@ export default function Home() {
     setPortfolio(nextPortfolio);
     setResult(optimise(nextPortfolio, banks, quotes));
     setDirty(false);
+    clearTargetOutcome();
+  };
+  const reverseTargetYtm = () => {
+    if (targetYtm === null || !Number.isFinite(targetYtm)) {
+      setTargetYtmError('请输入有效的目标 YTM。');
+      setTargetYtmMessage(null);
+      return;
+    }
+
+    const solution = solveTargetYtm(
+      frontierMode,
+      targetYtm,
+      portfolio,
+      banks,
+      quotes,
+    );
+    if (!solution.ok) {
+      setTargetYtmError(solution.message);
+      setTargetYtmMessage(null);
+      return;
+    }
+
+    const nextPortfolio: Portfolio = {
+      ...portfolio,
+      ...(frontierMode === 'wam'
+        ? { maxWam: solution.limit }
+        : { maxWal: solution.limit }),
+    };
+    setPortfolio(nextPortfolio);
+    setResult(solution.result);
+    setDirty(false);
+    setTargetYtmError(null);
+    setTargetYtmMessage(
+      `目标 ≥ ${percent(targetYtm, 3)}；最低 ${frontierMode.toUpperCase()} 上限 ${number(solution.limit)} 天；本解 ${percent(solution.result.postYtm, 3)}。推荐金额与比例已同步更新。`,
+    );
   };
 
   return (
@@ -1240,7 +1697,7 @@ export default function Home() {
                 </Badge>
               </div>
               <p className="mt-0.5 text-sm text-slate-300">
-                在期限与银行敞口内，寻找最高收益配置
+                在期限与机构集中度约束内，寻找最高收益配置
               </p>
             </div>
           </div>
@@ -1255,7 +1712,7 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1540px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1.55fr)_minmax(360px,0.75fr)] lg:px-8">
+      <div className="mx-auto grid max-w-[1540px] gap-6 px-4 py-6 sm:px-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(560px,0.85fr)] lg:px-8">
         <div className="space-y-5">
           <section className={card}>
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
@@ -1331,6 +1788,7 @@ export default function Home() {
                 min={0}
                 error={currentWamInputError}
                 warning={currentWamWarning}
+                warningTone="red"
                 onChange={(value) =>
                   updatePortfolio('wam', value ?? Number.NaN)
                 }
@@ -1342,6 +1800,7 @@ export default function Home() {
                 min={0}
                 error={currentWalInputError}
                 warning={currentWalWarning}
+                warningTone="red"
                 onChange={(value) =>
                   updatePortfolio('wal', value ?? Number.NaN)
                 }
@@ -1378,62 +1837,9 @@ export default function Home() {
           <section className={card}>
             <div className="section-head">
               <div>
-                <p className="eyebrow">02 · 收益—期限前沿</p>
-                <h2 className="mt-1 flex items-center gap-2 text-lg font-semibold">
-                  <TrendingUp className="size-5 text-teal-700" />
-                  多一天期限，换来多少收益
-                </h2>
-              </div>
-              <div
-                className="inline-flex rounded-xl bg-slate-100 p-1"
-                role="tablist"
-                aria-label="选择期限指标"
-              >
-                {(['wam', 'wal'] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    role="tab"
-                    aria-selected={frontierMode === mode}
-                    onClick={() => setFrontierMode(mode)}
-                    className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-                      frontierMode === mode
-                        ? 'bg-white text-slate-950 shadow-sm'
-                        : 'text-slate-500 hover:text-slate-800'
-                    }`}
-                  >
-                    {mode.toUpperCase()} 曲线
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div role="tabpanel">
-              {frontierMode === 'wam' ? (
-                <FrontierPanel
-                  mode="wam"
-                  points={frontiers.wam}
-                  currentLimit={portfolio.maxWam}
-                  otherLimit={portfolio.maxWal}
-                  onSelect={(day) => selectFrontierDay('wam', day)}
-                />
-              ) : (
-                <FrontierPanel
-                  mode="wal"
-                  points={frontiers.wal}
-                  currentLimit={portfolio.maxWal}
-                  otherLimit={portfolio.maxWam}
-                  onSelect={(day) => selectFrontierDay('wal', day)}
-                />
-              )}
-            </div>
-          </section>
-
-          <section className={card}>
-            <div className="section-head">
-              <div>
-                <p className="eyebrow">03 · 银行敞口</p>
+                <p className="eyebrow">02 · 机构敞口</p>
                 <h2 className="mt-1 text-lg font-semibold">
-                  今日参与银行与集中度额度
+                  今日参与机构与集中度额度
                 </h2>
               </div>
               <Badge variant="outline">
@@ -1446,7 +1852,7 @@ export default function Home() {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-sm font-semibold text-slate-800">
-                      合作银行备选库
+                      合作机构备选库
                     </p>
                     <p className="mt-0.5 text-xs text-slate-500">
                       选择后加入今天的敞口与报价名单
@@ -1456,7 +1862,7 @@ export default function Home() {
                 </div>
                 <div className="mt-3 flex gap-2">
                   <NativeSelect
-                    aria-label="从合作银行备选库选择"
+                    aria-label="从合作机构备选库选择"
                     value={
                       availableBankTemplates.some(
                         (bank) => bank.id === selectedBankTemplateId,
@@ -1471,8 +1877,8 @@ export default function Home() {
                   >
                     <NativeSelectOption value="">
                       {availableBankTemplates.length
-                        ? '选择备选银行'
-                        : '备选银行已全部加入'}
+                        ? '选择备选机构'
+                        : '备选机构已全部加入'}
                     </NativeSelectOption>
                     {availableBankTemplates.map((bank) => (
                       <NativeSelectOption value={bank.id} key={bank.id}>
@@ -1497,29 +1903,38 @@ export default function Home() {
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
                 <p className="text-sm font-semibold text-slate-800">
-                  新增合作银行
+                  新增合作机构
                 </p>
                 <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto]">
                   <label htmlFor="new-bank-name" className="grid gap-1">
-                    <span className="text-xs text-slate-500">银行名称</span>
+                    <span className="text-xs text-slate-500">机构名称</span>
                     <Input
                       id="new-bank-name"
-                      aria-label="新增合作银行名称"
+                      aria-label="新增合作机构名称"
                       value={newBankName}
-                      placeholder="例如：银行 F"
+                      placeholder="例如：机构 F"
                       onChange={(event) => setNewBankName(event.target.value)}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter') saveBankToLibrary();
                       }}
                     />
                   </label>
-                  <label htmlFor="new-bank-limit" className="grid gap-1">
+                  <label
+                    htmlFor="new-bank-limit"
+                    className={`grid gap-1 rounded-xl border p-2 ${
+                      newBankLimitError
+                        ? 'border-red-300 bg-red-50'
+                        : newBankLimitNotice
+                          ? 'border-yellow-300 bg-yellow-50'
+                          : 'border-transparent'
+                    }`}
+                  >
                     <span className="text-xs text-slate-500">
                       默认上限（%）
                     </span>
                     <EditableNumberInput
                       id="new-bank-limit"
-                      aria-label="新增合作银行默认集中度上限百分比"
+                      aria-label="新增合作机构默认集中度上限百分比"
                       value={newBankLimitPct}
                       min={0}
                       max={SFC_MAX_BANK_CONCENTRATION_PCT}
@@ -1528,7 +1943,13 @@ export default function Home() {
                         setNewBankLimitPct(value ?? Number.NaN)
                       }
                       aria-invalid={newBankLimitError ? true : undefined}
-                      className="text-right"
+                      className={`text-right ${
+                        newBankLimitError
+                          ? 'border-red-300 bg-red-50 text-red-950'
+                          : newBankLimitNotice
+                            ? 'border-yellow-300 bg-yellow-50 text-slate-950'
+                            : ''
+                      }`}
                     />
                     {newBankLimitError ? (
                       <span
@@ -1538,7 +1959,7 @@ export default function Home() {
                         {newBankLimitError}
                       </span>
                     ) : newBankLimitNotice ? (
-                      <span className="text-xs font-medium leading-4 text-amber-700">
+                      <span className="text-xs font-medium leading-4 text-yellow-800">
                         {newBankLimitNotice}
                       </span>
                     ) : null}
@@ -1565,7 +1986,7 @@ export default function Home() {
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
-                  <TableHead className="pl-5">银行</TableHead>
+                  <TableHead className="pl-5">机构</TableHead>
                   <TableHead className="text-right">
                     当前持仓
                     <span className="block text-[11px] font-normal text-slate-400">
@@ -1617,6 +2038,16 @@ export default function Home() {
                   const hasQuotes = quotes.some(
                     (quote) => quote.bankId === bank.id,
                   );
+                  const exposureInvalid = bankExposureInvalidIds.has(bank.id);
+                  const postTradeExposureBreach = bankExposureBreachIds.has(
+                    bank.id,
+                  );
+                  const currentExposureBreach =
+                    currentBankExposureBreachIds.has(bank.id);
+                  const exposureCellError =
+                    exposureInvalid || postTradeExposureBreach;
+                  const exposureHighlight =
+                    exposureCellError || currentExposureBreach;
                   return (
                     <TableRow key={bank.id}>
                       <TableCell className="min-w-32 pl-5">
@@ -1627,33 +2058,65 @@ export default function Home() {
                           今日名单
                         </p>
                       </TableCell>
-                      <TableCell className="min-w-28">
-                        <EditableNumberInput
-                          aria-label={`${bank.name}当前持仓绝对金额，单位${amountUnit}`}
-                          value={bank.currentExposure}
-                          min={0}
-                          step="0.01"
-                          onValueChange={(value) =>
-                            updateBank(bank.id, {
-                              currentExposure: value ?? Number.NaN,
-                            })
-                          }
-                          aria-invalid={
-                            !Number.isFinite(bank.currentExposure) ||
-                            bank.currentExposure < 0 ||
-                            undefined
-                          }
-                          className="text-right"
-                        />
+                      <TableCell
+                        className={`min-w-28 align-top ${exposureHighlight ? 'bg-red-50/90' : ''}`}
+                      >
+                        <div className="grid gap-1">
+                          <EditableNumberInput
+                            aria-label={`${bank.name}当前持仓绝对金额，单位${amountUnit}`}
+                            value={bank.currentExposure}
+                            min={0}
+                            step="0.01"
+                            onValueChange={(value) =>
+                              updateBank(bank.id, {
+                                currentExposure: value ?? Number.NaN,
+                              })
+                            }
+                            aria-invalid={exposureCellError || undefined}
+                            className={`text-right ${
+                              exposureHighlight
+                                ? 'border-red-300 bg-red-50 text-red-950'
+                                : ''
+                            }`}
+                          />
+                          {exposureInvalid ? (
+                            <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
+                              当前持仓必须是非负数字。
+                            </span>
+                          ) : postTradeExposureBreach ? (
+                            <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
+                              计入新增资金后仍超过适用上限 {number(finalCap)}{' '}
+                              {amountUnit}。
+                            </span>
+                          ) : currentExposureBreach ? (
+                            <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
+                              当前占比超限；计入新增资金后可稀释至上限内。
+                            </span>
+                          ) : null}
+                        </div>
                       </TableCell>
-                      <TableCell className="text-right text-slate-600">
+                      <TableCell
+                        className={`text-right text-slate-600 ${
+                          exposureHighlight
+                            ? 'bg-red-50/90 font-medium text-red-800'
+                            : ''
+                        }`}
+                      >
                         {portfolio.aum > 0
                           ? percent(
                               (bank.currentExposure / portfolio.aum) * 100,
                             )
                           : '—'}
                       </TableCell>
-                      <TableCell className="min-w-44">
+                      <TableCell
+                        className={`min-w-44 align-top ${
+                          concentrationError
+                            ? 'bg-red-50/90'
+                            : concentrationNotice
+                              ? 'bg-yellow-50/90'
+                              : ''
+                        }`}
+                      >
                         <div className="grid gap-1">
                           <EditableNumberInput
                             aria-label={`${bank.name}经合规确认的适用集中度上限`}
@@ -1667,17 +2130,23 @@ export default function Home() {
                               })
                             }
                             aria-invalid={concentrationError ? true : undefined}
-                            className="text-right"
+                            className={`text-right ${
+                              concentrationError
+                                ? 'border-red-300 bg-red-50 text-red-950'
+                                : concentrationNotice
+                                  ? 'border-yellow-300 bg-yellow-50 text-slate-950'
+                                  : ''
+                            }`}
                           />
                           {concentrationError ? (
                             <span
                               role="alert"
-                              className="max-w-52 text-xs font-medium leading-4 text-red-600"
+                              className="block max-w-52 whitespace-normal text-xs font-medium leading-4 text-red-600"
                             >
                               {concentrationError}
                             </span>
                           ) : concentrationNotice ? (
-                            <span className="max-w-52 text-xs font-medium leading-4 text-amber-700">
+                            <span className="block max-w-52 whitespace-normal text-xs font-medium leading-4 text-yellow-800">
                               {concentrationNotice}
                             </span>
                           ) : null}
@@ -1694,8 +2163,8 @@ export default function Home() {
                           aria-label={`将${bank.name}移出今日名单`}
                           title={
                             hasQuotes
-                              ? '请先删除该银行的今日报价'
-                              : '移出今日名单，但保留在合作银行备选库'
+                              ? '请先删除该机构的今日报价'
+                              : '移出今日名单，但保留在合作机构备选库'
                           }
                           variant="ghost"
                           size="icon-sm"
@@ -1705,6 +2174,7 @@ export default function Home() {
                               old.filter((item) => item.id !== bank.id),
                             );
                             setDirty(true);
+                            clearTargetOutcome();
                           }}
                         >
                           <Trash2 />
@@ -1719,7 +2189,7 @@ export default function Home() {
                       colSpan={7}
                       className="h-20 text-center text-sm text-slate-500"
                     >
-                      请先从合作银行备选库加入今天参与报价的银行。
+                      请先从合作机构备选库加入今天参与报价的机构。
                     </TableCell>
                   </TableRow>
                 ) : null}
@@ -1732,9 +2202,10 @@ export default function Home() {
                 当前持仓。
               </p>
               <p className="mt-1">
-                同一家银行的全部产品合并占用额度。SFC 一般上限为
-                10%；只有在已由合规确认满足 8.2(g)(i) 条件时才可提高，且最高为
-                25%。本工具在此假设输入的 AUM 等于用于集中度计算的 NAV。
+                同一机构的全部产品合并占用额度。单一实体一般上限为
+                10%；仅当该实体为符合条件的实质金融机构，并经合规确认满足
+                8.2(g)(i) 条件时才可提高至 25%。本工具假设 AUM
+                等于集中度计算使用的 NAV。
               </p>
             </div>
           </section>
@@ -1742,7 +2213,7 @@ export default function Home() {
           <section className={card}>
             <div className="section-head">
               <div>
-                <p className="eyebrow">04 · 市场报价</p>
+                <p className="eyebrow">03 · 市场报价</p>
                 <h2 className="mt-1 text-lg font-semibold">
                   今日可投产品与报价
                 </h2>
@@ -1765,6 +2236,7 @@ export default function Home() {
                     },
                   ]);
                   setDirty(true);
+                  clearTargetOutcome();
                 }}
               >
                 <Plus /> 添加报价
@@ -1774,7 +2246,7 @@ export default function Home() {
               <TableHeader>
                 <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
                   <TableHead className="pl-5">产品</TableHead>
-                  <TableHead>银行</TableHead>
+                  <TableHead>机构</TableHead>
                   <TableHead className="text-right">WAM/天</TableHead>
                   <TableHead className="text-right">WAL/天</TableHead>
                   <TableHead className="text-right">利率/%</TableHead>
@@ -1801,7 +2273,7 @@ export default function Home() {
                     </TableCell>
                     <TableCell className="min-w-32">
                       <NativeSelect
-                        aria-label={`${quote.name}银行`}
+                        aria-label={`${quote.name}机构`}
                         value={quote.bankId}
                         onChange={(event) =>
                           updateQuote(quote.id, { bankId: event.target.value })
@@ -1887,6 +2359,7 @@ export default function Home() {
                             old.filter((item) => item.id !== quote.id),
                           );
                           setDirty(true);
+                          clearTargetOutcome();
                         }}
                       >
                         <Trash2 />
@@ -1935,15 +2408,17 @@ export default function Home() {
           </div>
         </div>
 
-        <aside className="lg:sticky lg:top-6 lg:self-start">
-          <section
-            aria-live="polite"
-            className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_14px_40px_rgba(15,23,42,0.08)]"
-          >
+        <aside className="xl:self-start">
+          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
             <div className="flex items-start justify-between border-b border-slate-100 px-5 py-4">
               <div>
-                <p className="eyebrow">最优解</p>
-                <h2 className="mt-1 text-lg font-semibold">推荐配置</h2>
+                <p className="eyebrow">决策面板</p>
+                <h2 className="mt-1 text-lg font-semibold">
+                  收益前沿与推荐配置
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  前沿随输入实时更新；配置结果以最近一次计算为准
+                </p>
               </div>
               {hasRegulatoryLimitViolation ? (
                 <Badge variant="destructive">监管上限超出</Badge>
@@ -1958,6 +2433,76 @@ export default function Home() {
               ) : (
                 <Badge variant="destructive">输入需调整</Badge>
               )}
+            </div>
+
+            <div className="border-b border-slate-100">
+              <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
+                <div>
+                  <p className="eyebrow">收益前沿</p>
+                  <h3 className="mt-1 flex items-center gap-2 text-base font-semibold">
+                    <TrendingUp className="size-4 text-teal-700" />
+                    多一天期限，换来多少收益
+                  </h3>
+                </div>
+                <div
+                  className="inline-flex rounded-xl bg-slate-100 p-1"
+                  role="tablist"
+                  aria-label="选择期限指标"
+                >
+                  {(['wam', 'wal'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      id={`${mode}-frontier-tab`}
+                      type="button"
+                      role="tab"
+                      aria-selected={frontierMode === mode}
+                      aria-controls="frontier-panel"
+                      onClick={() => {
+                        setFrontierMode(mode);
+                        clearTargetOutcome();
+                      }}
+                      className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                        frontierMode === mode
+                          ? 'bg-white text-slate-950 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      {mode.toUpperCase()} 曲线
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div
+                id="frontier-panel"
+                role="tabpanel"
+                aria-labelledby={`${frontierMode}-frontier-tab`}
+              >
+                <FrontierPanel
+                  mode={frontierMode}
+                  points={frontiers[frontierMode]}
+                  currentLimit={
+                    frontierMode === 'wam' ? portfolio.maxWam : portfolio.maxWal
+                  }
+                  otherLimit={
+                    frontierMode === 'wam' ? portfolio.maxWal : portfolio.maxWam
+                  }
+                  onSelect={(day) => selectFrontierDay(frontierMode, day)}
+                  targetYtm={targetYtm}
+                  targetYtmError={targetYtmError}
+                  targetYtmMessage={targetYtmMessage}
+                  onTargetYtmChange={(value) => {
+                    setTargetYtm(value);
+                    clearTargetOutcome();
+                  }}
+                  onSolveTarget={reverseTargetYtm}
+                  disabled={hasRegulatoryLimitViolation}
+                />
+              </div>
+            </div>
+
+            <div className="border-b border-slate-100 px-5 py-4">
+              <p className="eyebrow">最优解</p>
+              <h3 className="mt-1 text-base font-semibold">推荐配置</h3>
             </div>
 
             {hasRegulatoryLimitViolation ? (
@@ -1975,7 +2520,7 @@ export default function Home() {
                   <Metric
                     label="交易后 AUM"
                     value={`${number(result.postAum)} ${amountUnit}`}
-                    detail={`新增 ${number(portfolio.cash)} ${amountUnit}`}
+                    detail={`新增 ${number(result.newMoneyAmount)} ${amountUnit}`}
                   />
                   <Metric
                     label="交易后 YTM"
@@ -1986,20 +2531,12 @@ export default function Home() {
                   <Metric
                     label="交易后 WAM"
                     value={`${number(result.postWam)} 天`}
-                    detail={
-                      portfolio.maxWam === null
-                        ? `SFC 上限 ${SFC_MAX_WAM_DAYS} 天`
-                        : `上限 ${number(portfolio.maxWam)} 天`
-                    }
+                    detail={`计算所用上限 ${number(result.appliedMaxWam)} 天`}
                   />
                   <Metric
                     label="交易后 WAL"
                     value={`${number(result.postWal)} 天`}
-                    detail={
-                      portfolio.maxWal === null
-                        ? `SFC 上限 ${SFC_MAX_WAL_DAYS} 天`
-                        : `上限 ${number(portfolio.maxWal)} 天`
-                    }
+                    detail={`计算所用上限 ${number(result.appliedMaxWal)} 天`}
                   />
                 </div>
 
@@ -2017,9 +2554,9 @@ export default function Home() {
 
                 <div className="border-t border-slate-100">
                   <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
-                    推荐金额
+                    推荐金额与新增资金占比
                   </h3>
-                  {result.allocations.length ? (
+                  {result.allocations.length || result.unallocated > EPSILON ? (
                     <div className="divide-y divide-slate-100">
                       {[...result.allocations]
                         .sort((a, b) => b.amount * b.rate - a.amount * a.rate)
@@ -2044,17 +2581,44 @@ export default function Home() {
                                 {number(item.amount)}
                               </p>
                               <p className="text-xs text-slate-400">
-                                {amountUnit} ·{' '}
-                                {portfolio.cash
+                                {amountUnit} · 占新增资金{' '}
+                                {result.newMoneyAmount > EPSILON
                                   ? percent(
-                                      (item.amount / portfolio.cash) * 100,
+                                      (item.amount / result.newMoneyAmount) *
+                                        100,
                                       1,
                                     )
-                                  : '0%'}
+                                  : '—'}
                               </p>
                             </div>
                           </div>
                         ))}
+                      {result.unallocated > EPSILON ? (
+                        <div className="flex items-center justify-between gap-3 px-5 py-3">
+                          <div>
+                            <p className="text-sm font-medium">保留现金</p>
+                            <p className="mt-0.5 text-xs text-slate-500">
+                              零期限 · 零收益
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-semibold tabular-nums">
+                              {number(result.unallocated)}
+                            </p>
+                            <p className="text-xs text-slate-400">
+                              {amountUnit} · 占新增资金{' '}
+                              {result.newMoneyAmount > EPSILON
+                                ? percent(
+                                    (result.unallocated /
+                                      result.newMoneyAmount) *
+                                      100,
+                                    1,
+                                  )
+                                : '—'}
+                            </p>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   ) : (
                     <p className="px-5 pb-4 text-sm text-slate-500">
@@ -2065,7 +2629,7 @@ export default function Home() {
 
                 <div className="border-t border-slate-100">
                   <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
-                    <Landmark className="size-4 text-teal-700" /> 交易后银行占比
+                    <Landmark className="size-4 text-teal-700" /> 交易后机构占比
                   </h3>
                   <div className="space-y-4 px-5 pb-5">
                     {result.banks.map((bank) => {
