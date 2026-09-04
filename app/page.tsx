@@ -1266,18 +1266,22 @@ function FrontierPanel({
                 fill="#ffffff"
                 stroke="#0d9488"
                 strokeWidth={3}
-                label={{
-                  value: `(${number(plateau.day)} 天，${percent(plateau.ytm, 3)}) · 最大 YTM`,
-                  position: 'bottom',
-                  offset: 12,
-                  fill: '#0f766e',
-                  fontSize: 12,
-                  fontWeight: 600,
-                }}
               />
             ) : null}
           </LineChart>
         </ChartContainer>
+        {hasPlateau ? (
+          <p className="mt-2 flex flex-wrap items-center justify-center gap-2 text-sm font-semibold text-teal-700">
+            <span
+              aria-hidden="true"
+              className="h-2 w-2 rounded-full bg-teal-600"
+            />
+            <span>
+              坐标（{number(plateau.day)} 天，{percent(plateau.ytm, 3)}）· 最大
+              YTM
+            </span>
+          </p>
+        ) : null}
         <p className="mt-1 text-center text-xs text-slate-400">
           点击曲线上的位置，即可采用对应的 {label} 上限并重新计算
         </p>
