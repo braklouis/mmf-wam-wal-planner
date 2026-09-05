@@ -279,10 +279,16 @@ export const UNASSIGNED_BANK_ID = '__unassigned__';
 export const EXCLUDED_BANK_SELECT_VALUE = '__excluded__';
 
 export function amountTolerance(...values: number[]) {
-  const scale = Math.max(
-    0,
-    ...values.filter(Number.isFinite).map((value) => Math.abs(value)),
-  );
+  let scale = 0;
+  for (const value of values) {
+    if (!Number.isFinite(value)) {
+      continue;
+    }
+    const absolute = Math.abs(value);
+    if (absolute > scale) {
+      scale = absolute;
+    }
+  }
   return Math.max(Number.MIN_VALUE, scale * RELATIVE_TOLERANCE);
 }
 
@@ -569,17 +575,16 @@ export function simplex(
 ): number[] | null {
   const n = objective.length;
   const m = matrix.length;
-  if (
-    limits.length !== m ||
-    matrix.some(
-      (row, index) =>
-        row.length !== n ||
-        row.some((value) => !Number.isFinite(value)) ||
-        !Number.isFinite(limits[index]) ||
-        limits[index] < 0,
-    )
-  ) {
-    return null;
+  if (limits.length !== m) return null;
+  for (let row = 0; row < m; row += 1) {
+    const rowData = matrix[row];
+    if (!rowData || rowData.length !== n || !Number.isFinite(limits[row])) {
+      return null;
+    }
+    if (limits[row] < 0) return null;
+    for (let col = 0; col < n; col += 1) {
+      if (!Number.isFinite(rowData[col])) return null;
+    }
   }
   if (n === 0) return [];
 
@@ -589,10 +594,12 @@ export function simplex(
   const basis = Array.from({ length: m }, (_, i) => n + i);
 
   for (let row = 0; row < m; row += 1) {
-    const rowScale = Math.max(
-      Math.abs(limits[row]),
-      ...matrix[row].map((value) => Math.abs(value)),
-    );
+    const rowData = matrix[row];
+    let rowScale = Math.abs(limits[row]);
+    for (let col = 0; col < n; col += 1) {
+      const coefficient = Math.abs(rowData[col]);
+      if (coefficient > rowScale) rowScale = coefficient;
+    }
     if (!Number.isFinite(rowScale)) return null;
     if (rowScale === 0) {
       t[row][n + row] = 1;
@@ -602,13 +609,15 @@ export function simplex(
       t[row][col] = matrix[row][col] / rowScale;
     }
     t[row][n + row] = 1;
-    t[row][width - 1] = limits[row] / rowScale;
+      t[row][width - 1] = limits[row] / rowScale;
   }
-  const objectiveScale = Math.max(
-    0,
-    ...objective.filter(Number.isFinite).map((value) => Math.abs(value)),
-  );
-  if (objective.some((value) => !Number.isFinite(value))) return null;
+  let objectiveScale = 0;
+  for (let col = 0; col < n; col += 1) {
+    const value = objective[col];
+    if (!Number.isFinite(value)) return null;
+    const absolute = Math.abs(value);
+    if (absolute > objectiveScale) objectiveScale = absolute;
+  }
   for (let col = 0; col < n; col += 1) {
     t[m][col] = objectiveScale === 0 ? 0 : -objective[col] / objectiveScale;
   }
@@ -1285,6 +1294,7 @@ export function describeBindingConstraints(
   quotes: Quote[],
 ) {
   const constraints: string[] = [];
+  const quoteById = new Map(quotes.map((quote) => [quote.id, quote]));
   const effectiveMaxWam = Math.min(
     portfolio.maxWam ?? SFC_MAX_WAM_DAYS,
     SFC_MAX_WAM_DAYS,
@@ -1300,16 +1310,19 @@ export function describeBindingConstraints(
     constraints.push(`WAL ${number(effectiveMaxWal)} 天上限`);
   }
 
-  const amountTolerance = Math.max(0.001, outcome.postAum * 0.00001);
+  const bindingAmountTolerance = Math.max(0.001, outcome.postAum * 0.00001);
   const quotedBankIds = new Set(quotes.map((quote) => quote.bankId));
   outcome.banks.forEach((bank) => {
-    if (quotedBankIds.has(bank.id) && bank.remaining <= amountTolerance) {
+    if (quotedBankIds.has(bank.id) && bank.remaining <= bindingAmountTolerance) {
       constraints.push(`${bank.name}集中度 ${percent(bank.limitPct)}`);
     }
   });
   outcome.allocations.forEach((allocation) => {
-    const quote = quotes.find((item) => item.id === allocation.id);
-    if (quote && quote.cap - allocation.amount <= amountTolerance) {
+    const quote = quoteById.get(allocation.id);
+    if (
+      quote &&
+      quote.cap - allocation.amount <= bindingAmountTolerance
+    ) {
       constraints.push(`「${allocation.name}」报价额度`);
     }
   });
@@ -1359,6 +1372,11 @@ export function buildFrontier(
     ...portfolio,
     ...(mode === 'wam' ? { maxWam: minimum } : { maxWal: minimum }),
   };
+  const includedIntegerDays = new Set<number>();
+  const minimumRounded = Math.round(minimum);
+  if (Math.abs(minimum - minimumRounded) <= EPSILON) {
+    includedIntegerDays.add(minimumRounded);
+  }
   const minimumOutcome = optimiseSubscription(minimumCandidate, banks, quotes);
   if (minimumOutcome.ok) {
     points.push(
@@ -1367,11 +1385,12 @@ export function buildFrontier(
   }
 
   for (let day = firstDay; day <= regulatoryCeiling; day += 1) {
-    if (points.some((point) => Math.abs(point.day - day) <= EPSILON)) continue;
+    if (includedIntegerDays.has(day)) continue;
     const candidate: Portfolio = {
       ...portfolio,
       ...(mode === 'wam' ? { maxWam: day } : { maxWal: day }),
     };
+    includedIntegerDays.add(day);
     const outcome = optimiseSubscription(candidate, banks, quotes);
     if (outcome.ok) {
       points.push(makeFrontierPoint(day, outcome, candidate, quotes));

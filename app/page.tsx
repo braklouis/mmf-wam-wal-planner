@@ -120,6 +120,7 @@ import {
 } from '@/lib/planner';
 
 const decimalDraftPattern = /^-?(?:\d+\.?\d*|\.\d*)?$/;
+const FRONTIER_DEBOUNCE_MS = 180;
 
 function numericDraft(value: number | null) {
   return value === null || !Number.isFinite(value) ? '' : String(value);
@@ -650,12 +651,104 @@ function PlannerWorkspace({
   const [targetYtm, setTargetYtm] = useState<number | null>(null);
   const [targetYtmError, setTargetYtmError] = useState<string | null>(null);
   const [targetYtmMessage, setTargetYtmMessage] = useState<string | null>(null);
+  const [frontiers, setFrontiers] = useState<{
+    wam: FrontierPoint[];
+    wal: FrontierPoint[];
+  }>({
+    wam: [],
+    wal: [],
+  });
   const stateRef = useRef({
     portfolio,
     banks: modelBanks,
     quotes,
     holdings,
   });
+  const planCacheRef = useRef<{
+    portfolio: Portfolio;
+    modelBanks: Bank[];
+    quotes: Quote[];
+    holdings: Holding[];
+    result: ModelResult;
+  } | null>(null);
+  const optimiseSubscriptionCacheRef = useRef<{
+    portfolio: Portfolio;
+    banks: Bank[];
+    quotes: Quote[];
+    result: ModelResult;
+  } | null>(null);
+  const frontierTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const frontierCacheRef = useRef<{
+    portfolio: Portfolio;
+    banks: Bank[];
+    quotes: Quote[];
+    points: {
+      wam: FrontierPoint[];
+      wal: FrontierPoint[];
+    };
+  } | null>(null);
+
+  const calculatePlanCached = (
+    nextPortfolio: Portfolio,
+    nextBanks: Bank[],
+    nextQuotes: Quote[],
+    nextHoldings: Holding[],
+  ): ModelResult => {
+    const cached = planCacheRef.current;
+    if (
+      cached &&
+      cached.portfolio === nextPortfolio &&
+      cached.modelBanks === nextBanks &&
+      cached.quotes === nextQuotes &&
+      cached.holdings === nextHoldings
+    ) {
+      return cached.result;
+    }
+
+    const nextResult = calculatePlan(
+      nextPortfolio,
+      nextBanks,
+      nextQuotes,
+      nextHoldings,
+    );
+    planCacheRef.current = {
+      portfolio: nextPortfolio,
+      modelBanks: nextBanks,
+      quotes: nextQuotes,
+      holdings: nextHoldings,
+      result: nextResult,
+    };
+    return nextResult;
+  };
+
+  const optimiseSubscriptionCached = (
+    nextPortfolio: Portfolio,
+    nextBanks: Bank[],
+    nextQuotes: Quote[],
+  ): ModelResult => {
+    const cached = optimiseSubscriptionCacheRef.current;
+    if (
+      cached &&
+      cached.portfolio === nextPortfolio &&
+      cached.banks === nextBanks &&
+      cached.quotes === nextQuotes
+    ) {
+      return cached.result;
+    }
+
+    const nextResult = optimiseSubscription(
+      nextPortfolio,
+      nextBanks,
+      nextQuotes,
+    );
+    optimiseSubscriptionCacheRef.current = {
+      portfolio: nextPortfolio,
+      banks: nextBanks,
+      quotes: nextQuotes,
+      result: nextResult,
+    };
+    return nextResult;
+  };
 
   useEffect(() => {
     stateRef.current = { portfolio, banks: modelBanks, quotes, holdings };
@@ -716,7 +809,7 @@ function PlannerWorkspace({
         },
         execute() {
           const current = stateRef.current;
-          const nextResult = calculatePlan(
+          const nextResult = calculatePlanCached(
             current.portfolio,
             current.banks,
             current.quotes,
@@ -864,6 +957,15 @@ function PlannerWorkspace({
       .map((holding) => holding.id),
   );
   const bankIds = new Set(banks.map((bank) => bank.id));
+  const bankTemplateIds = useMemo(
+    () =>
+      new Set(
+        banks
+          .map((bank) => bank.templateId)
+          .filter((templateId): templateId is string => templateId !== null),
+      ),
+    [banks],
+  );
   const holdingBankInvalidIds = new Set(
     holdings
       .filter(
@@ -967,30 +1069,101 @@ function PlannerWorkspace({
   const availableBankTemplates = useMemo(
     () =>
       bankLibrary.filter(
-        (template) => !banks.some((bank) => bank.templateId === template.id),
+        (template) => !bankTemplateIds.has(template.id),
       ),
-    [bankLibrary, banks],
+    [bankLibrary, bankTemplateIds],
+  );
+  const selectedBankTemplateValid = useMemo(
+    () =>
+      availableBankTemplates.some(
+        (bank) => bank.id === selectedBankTemplateId,
+      ),
+    [availableBankTemplates, selectedBankTemplateId],
   );
   const bankNames = useMemo(
     () => new Map(banks.map((bank) => [bank.id, bank.name])),
     [banks],
   );
-  const frontiers = useMemo(
-    () =>
-      isRedemption || hasHoldingsWorkspaceViolation
-        ? { wam: [], wal: [] }
-        : {
-            wam: buildFrontier('wam', portfolio, modelBanks, quotes),
-            wal: buildFrontier('wal', portfolio, modelBanks, quotes),
-          },
-    [
-      portfolio,
-      modelBanks,
-      quotes,
-      isRedemption,
-      hasHoldingsWorkspaceViolation,
-    ],
-  );
+  const bankHoldingCountById = useMemo(() => {
+    const holdingCount = new Map<string, number>();
+    banks.forEach((bank) => {
+      holdingCount.set(bank.id, 0);
+    });
+    holdings.forEach((holding) => {
+      if (holding.bankId !== null && holdingCount.has(holding.bankId)) {
+        holdingCount.set(
+          holding.bankId,
+          (holdingCount.get(holding.bankId) ?? 0) + 1,
+        );
+      }
+    });
+    return holdingCount;
+  }, [banks, holdings]);
+  const bankQuoteCountById = useMemo(() => {
+    const quoteCount = new Map<string, number>();
+    banks.forEach((bank) => {
+      quoteCount.set(bank.id, 0);
+    });
+    quotes.forEach((quote) => {
+      if (quoteCount.has(quote.bankId)) {
+        quoteCount.set(
+          quote.bankId,
+          (quoteCount.get(quote.bankId) ?? 0) + 1,
+        );
+      }
+    });
+    return quoteCount;
+  }, [banks, quotes]);
+  useEffect(() => {
+    if (frontierTimerRef.current !== null) {
+      clearTimeout(frontierTimerRef.current);
+      frontierTimerRef.current = null;
+    }
+
+    if (isRedemption || hasHoldingsWorkspaceViolation) {
+      setFrontiers({ wam: [], wal: [] });
+      return;
+    }
+
+    frontierTimerRef.current = setTimeout(() => {
+      frontierTimerRef.current = null;
+      const cached = frontierCacheRef.current;
+      if (
+        cached &&
+        cached.portfolio === portfolio &&
+        cached.banks === modelBanks &&
+        cached.quotes === quotes
+      ) {
+        setFrontiers(cached.points);
+        return;
+      }
+
+      const nextFrontiers = {
+        wam: buildFrontier('wam', portfolio, modelBanks, quotes),
+        wal: buildFrontier('wal', portfolio, modelBanks, quotes),
+      };
+      frontierCacheRef.current = {
+        portfolio,
+        banks: modelBanks,
+        quotes,
+        points: nextFrontiers,
+      };
+      setFrontiers(nextFrontiers);
+    }, FRONTIER_DEBOUNCE_MS);
+
+    return () => {
+      if (frontierTimerRef.current !== null) {
+        clearTimeout(frontierTimerRef.current);
+        frontierTimerRef.current = null;
+      }
+    };
+  }, [
+    portfolio,
+    modelBanks,
+    quotes,
+    isRedemption,
+    hasHoldingsWorkspaceViolation,
+  ]);
   const clearTargetOutcome = () => {
     setTargetYtmError(null);
     setTargetYtmMessage(null);
@@ -1132,14 +1305,16 @@ function PlannerWorkspace({
     setNewBankName('');
   };
   const calculate = () => {
-    setResult(calculatePlan(portfolio, modelBanks, quotes, holdings));
+    setResult(calculatePlanCached(portfolio, modelBanks, quotes, holdings));
     setDirty(false);
     clearTargetOutcome();
   };
   const changeTradeMode = (tradeMode: TradeMode) => {
     const nextPortfolio = { ...portfolio, tradeMode };
     setPortfolio(nextPortfolio);
-    setResult(calculatePlan(nextPortfolio, modelBanks, quotes, holdings));
+    setResult(
+      calculatePlanCached(nextPortfolio, modelBanks, quotes, holdings),
+    );
     setDirty(false);
     setTargetYtm(null);
     clearTargetOutcome();
@@ -1150,7 +1325,7 @@ function PlannerWorkspace({
     setHoldings(initialHoldings);
     setQuotes(initialQuotes);
     setResult(
-      calculatePlan(
+      calculatePlanCached(
         { ...initialPortfolio, redemptionStressPct: 2, cashBufferAmount: 5 },
         aggregateInstitutionExposures(initialBanks, initialHoldings),
         initialQuotes,
@@ -1169,7 +1344,7 @@ function PlannerWorkspace({
       ...(mode === 'wam' ? { maxWam: day } : { maxWal: day }),
     };
     setPortfolio(nextPortfolio);
-    setResult(optimiseSubscription(nextPortfolio, modelBanks, quotes));
+    setResult(optimiseSubscriptionCached(nextPortfolio, modelBanks, quotes));
     setDirty(false);
     clearTargetOutcome();
   };
@@ -2062,13 +2237,7 @@ function PlannerWorkspace({
                     <div className="mt-3 flex gap-2">
                       <NativeSelect
                         aria-label={t('从合作机构备选库选择')}
-                        value={
-                          availableBankTemplates.some(
-                            (bank) => bank.id === selectedBankTemplateId,
-                          )
-                            ? selectedBankTemplateId
-                            : ''
-                        }
+                        value={selectedBankTemplateValid ? selectedBankTemplateId : ''}
                         onChange={(event) =>
                           setSelectedBankTemplateId(event.target.value)
                         }
@@ -2092,11 +2261,7 @@ function PlannerWorkspace({
                       <Button
                         type="button"
                         variant="outline"
-                        disabled={
-                          !availableBankTemplates.some(
-                            (bank) => bank.id === selectedBankTemplateId,
-                          )
-                        }
+                        disabled={!selectedBankTemplateValid}
                         onClick={addBankFromLibrary}
                       >
                         <Plus />
@@ -2104,89 +2269,87 @@ function PlannerWorkspace({
                       </Button>
                     </div>
                   </div>
+                </div>
 
-                  <div className="rounded-xl border border-border bg-card p-4">
-                    <p className="text-sm font-semibold text-foreground">
-                      {t('新增合作机构')}
-                    </p>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto]">
-                      <label htmlFor="new-bank-name" className="grid gap-1">
-                        <span className="text-xs text-muted-foreground">
-                          {t('机构名称')}
-                        </span>
-                        <Input
-                          id="new-bank-name"
-                          aria-label={t('新增合作机构名称')}
-                          value={newBankName}
-                          placeholder={t('例如：机构 F')}
-                          onChange={(event) =>
-                            setNewBankName(event.target.value)
-                          }
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') saveBankToLibrary();
-                          }}
-                        />
-                      </label>
-                      <label
-                        htmlFor="new-bank-limit"
-                        className={`grid gap-1 rounded-xl border p-2 ${
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <p className="text-sm font-semibold text-foreground">
+                    {t('新增合作机构')}
+                  </p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto]">
+                    <label htmlFor="new-bank-name" className="grid gap-1">
+                      <span className="text-xs text-muted-foreground">
+                        {t('机构名称')}
+                      </span>
+                      <Input
+                        id="new-bank-name"
+                        aria-label={t('新增合作机构名称')}
+                        value={newBankName}
+                        placeholder={t('例如：机构 F')}
+                        onChange={(event) => setNewBankName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') saveBankToLibrary();
+                        }}
+                      />
+                    </label>
+                    <label
+                      htmlFor="new-bank-limit"
+                      className={`grid gap-1 rounded-xl border p-2 ${
+                        newBankLimitError
+                          ? 'border-red-300 bg-red-50'
+                          : newBankLimitNotice
+                            ? 'border-yellow-300 bg-yellow-100/80'
+                            : 'border-transparent'
+                      }`}
+                    >
+                      <span className="text-xs text-muted-foreground">
+                        {t('默认上限（%）')}
+                      </span>
+                      <EditableNumberInput
+                        id="new-bank-limit"
+                        aria-label={t('新增合作机构默认集中度上限百分比')}
+                        value={newBankLimitPct}
+                        min={0}
+                        max={SFC_MAX_BANK_CONCENTRATION_PCT}
+                        step="0.01"
+                        onValueChange={(value) =>
+                          setNewBankLimitPct(value ?? Number.NaN)
+                        }
+                        aria-invalid={newBankLimitError ? true : undefined}
+                        className={`text-right ${
                           newBankLimitError
-                            ? 'border-red-300 bg-red-50'
+                            ? 'border-red-300 bg-red-50 text-red-950'
                             : newBankLimitNotice
-                              ? 'border-yellow-300 bg-yellow-100/80'
-                              : 'border-transparent'
+                              ? 'border-yellow-300 bg-yellow-50 text-foreground'
+                              : ''
                         }`}
-                      >
-                        <span className="text-xs text-muted-foreground">
-                          {t('默认上限（%）')}
-                        </span>
-                        <EditableNumberInput
-                          id="new-bank-limit"
-                          aria-label={t('新增合作机构默认集中度上限百分比')}
-                          value={newBankLimitPct}
-                          min={0}
-                          max={SFC_MAX_BANK_CONCENTRATION_PCT}
-                          step="0.01"
-                          onValueChange={(value) =>
-                            setNewBankLimitPct(value ?? Number.NaN)
-                          }
-                          aria-invalid={newBankLimitError ? true : undefined}
-                          className={`text-right ${
-                            newBankLimitError
-                              ? 'border-red-300 bg-red-50 text-red-950'
-                              : newBankLimitNotice
-                                ? 'border-yellow-300 bg-yellow-50 text-foreground'
-                                : ''
-                          }`}
-                        />
-                        {newBankLimitError ? (
-                          <span
-                            role="alert"
-                            className="text-xs font-medium leading-4 text-red-600"
-                          >
-                            {t(newBankLimitError)}
-                          </span>
-                        ) : newBankLimitNotice ? (
-                          <span className="text-xs font-medium leading-4 text-yellow-800">
-                            {t(newBankLimitNotice)}
-                          </span>
-                        ) : null}
-                      </label>
-                      <div className="flex items-end">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={
-                            !newBankName.trim() ||
-                            !Number.isFinite(newBankLimitPct) ||
-                            newBankLimitPct < 0 ||
-                            newBankLimitPct > SFC_MAX_BANK_CONCENTRATION_PCT
-                          }
-                          onClick={saveBankToLibrary}
+                      />
+                      {newBankLimitError ? (
+                        <span
+                          role="alert"
+                          className="text-xs font-medium leading-4 text-red-600"
                         >
-                          {t('存入备选库')}
-                        </Button>
-                      </div>
+                          {t(newBankLimitError)}
+                        </span>
+                      ) : newBankLimitNotice ? (
+                        <span className="text-xs font-medium leading-4 text-yellow-800">
+                          {t(newBankLimitNotice)}
+                        </span>
+                      ) : null}
+                    </label>
+                    <div className="flex items-end">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={
+                          !newBankName.trim() ||
+                          !Number.isFinite(newBankLimitPct) ||
+                          newBankLimitPct < 0 ||
+                          newBankLimitPct > SFC_MAX_BANK_CONCENTRATION_PCT
+                        }
+                        onClick={saveBankToLibrary}
+                      >
+                        {t('存入备选库')}
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -2269,13 +2432,11 @@ function PlannerWorkspace({
                         0,
                         bank.currentExposure - postTradeExposure,
                       );
-                      const linkedQuoteCount = quotes.filter(
-                        (quote) => quote.bankId === bank.id,
-                      ).length;
+                      const linkedQuoteCount =
+                        bankQuoteCountById.get(bank.id) ?? 0;
                       const hasQuotes = linkedQuoteCount > 0;
-                      const linkedHoldingCount = holdings.filter(
-                        (holding) => holding.bankId === bank.id,
-                      ).length;
+                      const linkedHoldingCount =
+                        bankHoldingCountById.get(bank.id) ?? 0;
                       const hasHoldings = linkedHoldingCount > 0;
                       const referenceSummary = [
                         hasHoldings ? `${linkedHoldingCount} 项持仓` : null,
