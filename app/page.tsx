@@ -1,5 +1,9 @@
 'use client';
 
+import { createLargeExample } from '@/lib/large-example';
+import { holdingMetrics } from '@/lib/holding-metrics';
+import { normalizeNumericInput } from '@/lib/numeric-input';
+
 import {
   type ComponentProps,
   useEffect,
@@ -75,6 +79,7 @@ import {
   type WorkspaceView,
   type Portfolio,
   type Bank,
+  type ModelBank,
   type BankTemplate,
   type AmountUnit,
   type Quote,
@@ -119,7 +124,6 @@ import {
   parseBankLibrary,
 } from '@/lib/planner';
 
-const decimalDraftPattern = /^-?(?:\d+\.?\d*|\.\d*)?$/;
 const FRONTIER_DEBOUNCE_MS = 180;
 
 function numericDraft(value: number | null) {
@@ -162,22 +166,24 @@ function EditableNumberInput({
       {...props}
       type="text"
       inputMode="decimal"
-      value={draft}
+      value={props.readOnly ? (value === null || !Number.isFinite(value) ? '—' : number(value, 3)) : draft}
       onFocus={(event) => {
-        editing.current = true;
+        editing.current = !props.readOnly;
         onFocus?.(event);
       }}
       onChange={(event) => {
-        const next = event.target.value.replace(/[，,]/g, '.');
-        if (!decimalDraftPattern.test(next)) return;
+        if (props.readOnly) return;
+        const next = normalizeNumericInput(event.target.value);
+        if (next === null) return;
         setDraft(next);
         onValueChange(parseNumericDraft(next));
       }}
       onBlur={(event) => {
         editing.current = false;
+        if (props.readOnly) { onBlur?.(event); return; }
         const parsed = parseNumericDraft(draft);
         setDraft(parsed === null ? '' : String(parsed));
-        onValueChange(parsed);
+        if (!Object.is(parsed, value)) onValueChange(parsed);
         onBlur?.(event);
       }}
       onKeyDown={(event) => {
@@ -199,6 +205,7 @@ function NumberField({
   error,
   warning,
   warningTone = 'yellow',
+  readOnly = false,
 }: {
   label: string;
   value: number | null;
@@ -210,6 +217,7 @@ function NumberField({
   error?: string | null;
   warning?: string | null;
   warningTone?: 'yellow' | 'red';
+  readOnly?: boolean;
 }) {
   const { t } = useI18n();
   const fallbackError =
@@ -236,7 +244,11 @@ function NumberField({
     >
       <span className="flex justify-between text-sm font-medium text-foreground/85">
         {t(label)}
-        {optional ? (
+        {readOnly ? (
+          <span className="text-xs font-normal text-muted-foreground">
+            {t('自动计算')}
+          </span>
+        ) : optional ? (
           <span className="text-xs font-normal text-muted-foreground/75">
             {t('可留空')}
           </span>
@@ -244,18 +256,21 @@ function NumberField({
       </span>
       <span className="relative">
         <EditableNumberInput
+          readOnly={readOnly}
           min={min}
           max={max}
           step="0.01"
           value={value}
-          onValueChange={onChange}
+          onValueChange={readOnly ? () => {} : onChange}
           aria-invalid={validationError ? true : undefined}
           className={`h-10 rounded-xl pr-12 text-base ${
             isRed
               ? 'border-red-300 bg-red-50 text-red-950 focus-visible:border-red-500 focus-visible:ring-red-500/15'
               : isYellow
                 ? 'border-yellow-300 bg-yellow-50 text-foreground focus-visible:border-yellow-500 focus-visible:ring-yellow-500/15'
-                : 'border-border bg-card focus-visible:border-primary focus-visible:ring-primary/20'
+                : readOnly
+                  ? 'cursor-default border-border bg-muted text-muted-foreground dark:bg-muted focus-visible:border-border focus-visible:ring-0'
+                  : 'border-border bg-card focus-visible:border-primary focus-visible:ring-primary/20'
           }`}
         />
         <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground/75">
@@ -607,14 +622,19 @@ function PlannerWorkspace({
   });
   const [banks, setBanks] = useState(initialBanks);
   const [holdings, setHoldings] = useState(initialHoldings);
+  const metrics = useMemo(() => holdingMetrics(holdings), [holdings]);
   const portfolio = useMemo(
     () => ({
       ...portfolioInput,
+      aum: metrics.aum,
+      ytm: metrics.ytm,
+      wam: metrics.wam,
+      wal: metrics.wal,
       cashBufferAmount: holdings
         .filter((h) => h.isCash)
         .reduce((sum, h) => sum + h.amount, 0),
     }),
-    [portfolioInput, holdings],
+    [portfolioInput, holdings, metrics],
   );
   const stress = redemptionStress(portfolio);
   const modelBanks = useMemo(
@@ -624,8 +644,6 @@ function PlannerWorkspace({
   const [quotes, setQuotes] = useState(initialQuotes);
   const [bankLibrary, setBankLibrary] = useState(initialBankLibrary);
   const [bankLibraryLoaded, setBankLibraryLoaded] = useState(false);
-  const [selectedBankTemplateId, setSelectedBankTemplateId] =
-    useState('bank-d');
   const [newBankName, setNewBankName] = useState('');
   const [newBankLimitPct, setNewBankLimitPct] = useState(10);
   const [amountUnit, setAmountUnit] = useState<AmountUnit>('百万元');
@@ -654,6 +672,7 @@ function PlannerWorkspace({
   const [frontiers, setFrontiers] = useState<{
     wam: FrontierPoint[];
     wal: FrontierPoint[];
+    source?: { portfolio: Portfolio; banks: ModelBank[]; quotes: Quote[] };
   }>({
     wam: [],
     wal: [],
@@ -666,21 +685,21 @@ function PlannerWorkspace({
   });
   const planCacheRef = useRef<{
     portfolio: Portfolio;
-    modelBanks: Bank[];
+    modelBanks: ModelBank[];
     quotes: Quote[];
     holdings: Holding[];
     result: ModelResult;
   } | null>(null);
   const optimiseSubscriptionCacheRef = useRef<{
     portfolio: Portfolio;
-    banks: Bank[];
+    banks: ModelBank[];
     quotes: Quote[];
     result: ModelResult;
   } | null>(null);
   const frontierTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frontierCacheRef = useRef<{
     portfolio: Portfolio;
-    banks: Bank[];
+    banks: ModelBank[];
     quotes: Quote[];
     points: {
       wam: FrontierPoint[];
@@ -690,7 +709,7 @@ function PlannerWorkspace({
 
   const calculatePlanCached = (
     nextPortfolio: Portfolio,
-    nextBanks: Bank[],
+    nextBanks: ModelBank[],
     nextQuotes: Quote[],
     nextHoldings: Holding[],
   ): ModelResult => {
@@ -723,7 +742,7 @@ function PlannerWorkspace({
 
   const optimiseSubscriptionCached = (
     nextPortfolio: Portfolio,
-    nextBanks: Bank[],
+    nextBanks: ModelBank[],
     nextQuotes: Quote[],
   ): ModelResult => {
     const cached = optimiseSubscriptionCacheRef.current;
@@ -796,7 +815,7 @@ function PlannerWorkspace({
         name: 'calculate_current_mmf_allocation',
         title: t('计算当前 MMF 配置'),
         description: t(
-          '使用页面当前填写的组合、当前持仓、机构上限、交易方向和报价，计算申购配置或同比例赎回影响。',
+          '使用页面当前填写的组合、当前持仓、机构上限和报价，计算申购配置。净赎回暂不可用。',
         ),
         inputSchema: {
           type: 'object',
@@ -941,8 +960,9 @@ function PlannerWorkspace({
   const newBankLimitError = bankConcentrationError(newBankLimitPct);
   const newBankLimitNotice = bankConcentrationNotice(newBankLimitPct);
   const holdingErrors = useMemo(
-    () => holdingValidationErrors(portfolio, banks, holdings),
-    [portfolio, banks, holdings],
+    () => [...holdingValidationErrors(portfolio, banks, holdings),
+      ...metrics.errors.map(name => `${t('请补齐持仓收益率与有效期限')}：${name}`)],
+    [portfolio, banks, holdings, metrics, t],
   );
   const holdingNameInvalidIds = new Set(
     holdings
@@ -1069,16 +1089,9 @@ function PlannerWorkspace({
   const availableBankTemplates = useMemo(
     () =>
       bankLibrary.filter(
-        (template) => !bankTemplateIds.has(template.id),
+        (template) => !bankTemplateIds.has(template.id) && !banks.some(bank => bank.name.trim().toLocaleLowerCase('zh-CN') === template.name.trim().toLocaleLowerCase('zh-CN')),
       ),
-    [bankLibrary, bankTemplateIds],
-  );
-  const selectedBankTemplateValid = useMemo(
-    () =>
-      availableBankTemplates.some(
-        (bank) => bank.id === selectedBankTemplateId,
-      ),
-    [availableBankTemplates, selectedBankTemplateId],
+    [bankLibrary, bankTemplateIds, banks],
   );
   const bankNames = useMemo(
     () => new Map(banks.map((bank) => [bank.id, bank.name])),
@@ -1121,7 +1134,6 @@ function PlannerWorkspace({
     }
 
     if (isRedemption || hasHoldingsWorkspaceViolation) {
-      setFrontiers({ wam: [], wal: [] });
       return;
     }
 
@@ -1134,7 +1146,7 @@ function PlannerWorkspace({
         cached.banks === modelBanks &&
         cached.quotes === quotes
       ) {
-        setFrontiers(cached.points);
+        setFrontiers({ ...cached.points, source: { portfolio, banks: modelBanks, quotes } });
         return;
       }
 
@@ -1148,7 +1160,7 @@ function PlannerWorkspace({
         quotes,
         points: nextFrontiers,
       };
-      setFrontiers(nextFrontiers);
+      setFrontiers({ ...nextFrontiers, source: { portfolio, banks: modelBanks, quotes } });
     }, FRONTIER_DEBOUNCE_MS);
 
     return () => {
@@ -1255,9 +1267,9 @@ function PlannerWorkspace({
     setDirty(true);
     clearTargetOutcome();
   };
-  const addBankFromLibrary = () => {
+  const addBankFromLibrary = (templateId: string) => {
     const template = availableBankTemplates.find(
-      (bank) => bank.id === selectedBankTemplateId,
+      (bank) => bank.id === templateId,
     );
     if (!template) return;
     setBanks((old) => [
@@ -1269,7 +1281,6 @@ function PlannerWorkspace({
         limitPct: template.defaultLimitPct,
       },
     ]);
-    setSelectedBankTemplateId('');
     setDirty(true);
     clearTargetOutcome();
   };
@@ -1289,19 +1300,23 @@ function PlannerWorkspace({
         bank.name.toLocaleLowerCase('zh-CN') ===
         name.toLocaleLowerCase('zh-CN'),
     );
-    if (existing) {
-      setSelectedBankTemplateId(existing.id);
+    if (banks.some(bank => bank.name.trim().toLocaleLowerCase('zh-CN') === name.toLocaleLowerCase('zh-CN'))) {
       setNewBankName('');
       return;
     }
 
-    const template: BankTemplate = {
+    const template: BankTemplate = existing ?? {
       id: id('bank-template'),
       name,
       defaultLimitPct: newBankLimitPct,
     };
-    setBankLibrary((old) => [...old, template]);
-    setSelectedBankTemplateId(template.id);
+    if (!existing) setBankLibrary((old) => [...old, template]);
+    setBanks(old => [...old, {
+      id: id('today-bank'), templateId: template.id, name: template.name,
+      limitPct: newBankLimitPct,
+    }]);
+    setDirty(true);
+    clearTargetOutcome();
     setNewBankName('');
   };
   const calculate = () => {
@@ -1320,6 +1335,7 @@ function PlannerWorkspace({
     clearTargetOutcome();
   };
   const reset = () => {
+    setAmountUnit('百万元');
     setPortfolio({ ...initialPortfolio, redemptionStressPct: 2 });
     setBanks(initialBanks);
     setHoldings(initialHoldings);
@@ -1336,6 +1352,20 @@ function PlannerWorkspace({
     setTargetYtm(null);
     setTargetYtmError(null);
     setTargetYtmMessage(null);
+  };
+  const loadLargeExample = (mode: TradeMode) => {
+    const example = createLargeExample(mode);
+    setAmountUnit('亿元');
+    setPortfolio(example.portfolio);
+    setBanks(example.banks);
+    setHoldings(example.holdings);
+    setQuotes(example.quotes);
+    setResult(calculatePlanCached(example.portfolio,
+      aggregateInstitutionExposures(example.banks, example.holdings),
+      example.quotes, example.holdings));
+    setDirty(false);
+    setTargetYtm(null);
+    clearTargetOutcome();
   };
   const selectFrontierDay = (mode: FrontierMode, day: number) => {
     if (isRedemption || holdingErrors.length) return;
@@ -1386,12 +1416,12 @@ function PlannerWorkspace({
 
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <header className="border-b border-slate-800 bg-[#0b2431] text-white">
+      <header className="border-b border-sky-200 bg-[#e6f2fc] text-slate-900 dark:border-slate-800 dark:bg-[#0b192d] dark:text-white">
         <div className="mx-auto max-w-[1540px] px-4 py-3 sm:px-6 lg:px-8">
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <fieldset
               aria-label={t('界面语言')}
-              className="inline-flex rounded-lg border border-white/15 bg-white/5 p-0.5"
+              className="inline-flex rounded-lg border border-sky-200 bg-white/50 p-0.5 dark:border-white/15 dark:bg-white/5"
             >
               {localeOptions.map((option) => (
                 <button
@@ -1405,7 +1435,7 @@ function PlannerWorkspace({
                   className={`min-w-9 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 ${
                     locale === option.value
                       ? 'bg-primary text-primary-foreground shadow-sm'
-                      : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                      : 'text-slate-600 hover:bg-white/70 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white'
                   }`}
                 >
                   {option.shortLabel}
@@ -1420,7 +1450,7 @@ function PlannerWorkspace({
               )}
               title={t(theme === 'dark' ? '切换至浅色模式' : '切换至深色模式')}
               onClick={onThemeToggle}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-white/50 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-white/70 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 dark:border-white/15 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
             >
               {theme === 'dark' ? (
                 <Sun className="size-3.5" />
@@ -1440,11 +1470,11 @@ function PlannerWorkspace({
                   <h1 className="text-xl font-semibold tracking-tight">
                     {t('MMF 配置台')}
                   </h1>
-                  <Badge className="border border-white/10 bg-white/10 text-teal-100">
+                  <Badge className="border border-sky-200 bg-white/50 text-sky-800 dark:border-white/10 dark:bg-white/10 dark:text-sky-100">
                     {t('本地草案')}
                   </Badge>
                 </div>
-                <p className="mt-0.5 text-sm text-slate-300">
+                <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-300">
                   {t(
                     workspaceView === 'holdings'
                       ? '集中维护持仓、机构归属与集中度上限'
@@ -1455,11 +1485,11 @@ function PlannerWorkspace({
                 </p>
               </div>
             </div>
-            <div className="flex flex-wrap gap-2 text-xs text-slate-300">
-              <span className="rounded-full border border-white/10 px-3 py-1.5">
+            <div className="flex flex-wrap gap-2 text-xs text-slate-600 dark:text-slate-300">
+              <span className="rounded-full border border-sky-200 px-3 py-1.5 dark:border-white/10">
                 {t('WAM 利率敏感度 · WAL 最终到期')}
               </span>
-              <span className="rounded-full border border-white/10 px-3 py-1.5">
+              <span className="rounded-full border border-sky-200 px-3 py-1.5 dark:border-white/10">
                 {t('金额字段 = 绝对金额 · % 字段 = 占比')}
               </span>
             </div>
@@ -1477,21 +1507,6 @@ function PlannerWorkspace({
               type="button"
               variant="ghost"
               size="sm"
-              aria-pressed={workspaceView === 'planner'}
-              className={
-                workspaceView === 'planner'
-                  ? 'bg-card text-foreground shadow-sm hover:bg-card'
-                  : 'text-muted-foreground hover:text-foreground'
-              }
-              onClick={() => setWorkspaceView('planner')}
-            >
-              <Calculator />
-              {t('配置测算')}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
               aria-pressed={workspaceView === 'holdings'}
               className={
                 workspaceView === 'holdings'
@@ -1501,21 +1516,34 @@ function PlannerWorkspace({
               onClick={() => setWorkspaceView('holdings')}
             >
               <Landmark />
-              {t('当前持仓与机构')}
-              {hasHoldingsWorkspaceViolation ? (
-                <span className="grid min-w-5 place-items-center rounded-full bg-red-100 px-1 text-[11px] font-semibold text-red-700">
-                  {holdingErrors.length || '!'}
-                </span>
-              ) : null}
+              {t('当前持仓')}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-pressed={workspaceView === 'quotes'}
+              className={
+                workspaceView === 'quotes'
+                  ? 'bg-card text-foreground shadow-sm hover:bg-card'
+                  : 'text-muted-foreground hover:text-foreground'
+              }
+              onClick={() => setWorkspaceView('quotes')}
+            >
+              <TrendingUp />
+              {t('今日可投')}
+            </Button>
+            <Button variant="ghost" size="sm" aria-pressed={workspaceView === 'planner'}
+              className={workspaceView === 'planner' ? 'bg-card text-foreground shadow-sm hover:bg-card' : 'text-muted-foreground hover:text-foreground'}
+              onClick={() => setWorkspaceView('planner')}>
+              <Calculator />{t('配置测算')}
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">
-            {t(
-              workspaceView === 'holdings'
-                ? '持仓、合作机构库及集中度设置在此统一维护'
-                : '组合参数、市场报价与优化结果',
-            )}
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" disabled>{t('赎回示例（暂不可用）')}</Button>
+            <Button variant="outline" size="sm" onClick={() => loadLargeExample('subscription')}>{t('12家银行模拟示例')}</Button>
+            <Button variant="outline" size="sm" onClick={reset}><RefreshCcw />{t('恢复示例')}</Button>
+          </div>
         </div>
       </nav>
 
@@ -1527,7 +1555,7 @@ function PlannerWorkspace({
         }`}
       >
         <div className="space-y-5">
-          <section className={`${card} overflow-hidden`}>
+          {workspaceView === 'planner' && <section className={`${card} overflow-hidden`}>
             <div className="border-b border-border/60 bg-primary/5 px-5 py-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -1677,7 +1705,7 @@ function PlannerWorkspace({
                 </Button>
               )}
             </div>
-          </section>
+          </section>}
 
           {workspaceView === 'planner' ? (
             <section className={card}>
@@ -1739,15 +1767,16 @@ function PlannerWorkspace({
                     <button
                       key={mode}
                       type="button"
+                      disabled={mode === 'redemption'}
                       aria-pressed={portfolio.tradeMode === mode}
                       onClick={() => changeTradeMode(mode)}
-                      className={`rounded-lg px-5 py-2 text-sm font-semibold transition-colors ${
+                      className={`rounded-lg px-5 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                         portfolio.tradeMode === mode
                           ? 'bg-card text-foreground shadow-sm'
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
-                      {t(label)}
+                      {t(mode === 'redemption' ? '净赎回（暂不可用）' : label)}
                     </button>
                   ))}
                 </fieldset>
@@ -1755,6 +1784,7 @@ function PlannerWorkspace({
               <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
                 <NumberField
                   label={t('当前 AUM（绝对金额）')}
+                  readOnly
                   value={portfolio.aum}
                   suffix={amountUnit}
                   min={0}
@@ -1783,7 +1813,8 @@ function PlannerWorkspace({
                   }
                 />
                 <NumberField
-                  label={t('当前 YTM')}
+                  label={t('当前加权 YTM')}
+                  readOnly
                   value={portfolio.ytm}
                   suffix="%"
                   onChange={(value) =>
@@ -1792,6 +1823,7 @@ function PlannerWorkspace({
                 />
                 <NumberField
                   label={t('当前 WAM')}
+                  readOnly
                   value={portfolio.wam}
                   suffix={t('天')}
                   min={0}
@@ -1804,6 +1836,7 @@ function PlannerWorkspace({
                 />
                 <NumberField
                   label={t('当前 WAL')}
+                  readOnly
                   value={portfolio.wal}
                   suffix={t('天')}
                   min={0}
@@ -1845,13 +1878,16 @@ function PlannerWorkspace({
                 ) : (
                   <>
                     {t(
-                      '所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM + 新增待配置资金；新增资金尚未包含在当前 AUM 中。当前 WAM/WAL 是事实快照，超标时仍可录入以测算修复方案；目标留空时仍自动执行 SFC 监管上限 WAM 60 天、WAL 120 天。',
+                      '当前 AUM、加权 YTM、WAM、WAL 自动汇总自持仓。请在持仓中编辑金额、收益率和剩余期限；这里只需填写新增资金与上限。',
                     )}
                   </>
                 )}
               </p>
+              <Button variant="ghost" className="mx-5 mb-3" onClick={() => setWorkspaceView('holdings')}>
+                {t('编辑持仓')}
+              </Button>
             </section>
-          ) : (
+          ) : workspaceView === 'holdings' ? (
             <>
               <section className={card}>
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-4">
@@ -1907,7 +1943,7 @@ function PlannerWorkspace({
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {t(
-                        '机构敞口从这里自动汇总；净赎回时按每项持仓同比例测算。',
+                        '机构敞口从当前持仓自动汇总。',
                       )}
                     </p>
                   </div>
@@ -1933,6 +1969,14 @@ function PlannerWorkspace({
                   </div>
                 </div>
 
+                <p className="px-5 py-3 text-xs text-muted-foreground">
+                  {t('持仓填写当前估值收益率和剩余天数；WAM 留空采用 WAL，现金期限为 0。')}
+                </p>
+                {metrics.errors.length > 0 ? (
+                  <p role="alert" className="px-5 pb-3 text-sm text-destructive">
+                    {t('请补齐持仓收益率与有效期限')}：{metrics.errors.join('、')}
+                  </p>
+                ) : null}
                 {holdingTotalError ? (
                   <div className="border-b border-border/60 px-5 py-4">
                     <Alert variant="destructive">
@@ -1973,6 +2017,9 @@ function PlannerWorkspace({
                           {t(amountUnit)}
                         </span>
                       </TableHead>
+                      <TableHead className="min-w-32">{t('持仓 YTM')} %</TableHead>
+                      <TableHead className="min-w-32">WAM / {t('天')}</TableHead>
+                      <TableHead className="min-w-32">WAL / {t('天')}</TableHead>
                       {isRedemption ? (
                         <>
                           <TableHead className="min-w-32 text-right">
@@ -2148,6 +2195,18 @@ function PlannerWorkspace({
                               ) : null}
                             </div>
                           </TableCell>
+                          {(['ytm', 'wamDays', 'walDays'] as const).map(field => (
+                            <TableCell key={field} className="min-w-32">
+                              <EditableNumberInput
+                                aria-label={`${holding.name} ${field === 'ytm' ? 'YTM' : field === 'wamDays' ? 'WAM' : 'WAL'}`}
+                                value={holding.isCash && field !== 'ytm' ? 0 : holding[field] ?? null}
+                                readOnly={holding.isCash && field !== 'ytm'}
+                                placeholder={field === 'wamDays' ? t('同 WAL') : t('必填')}
+                                aria-invalid={holding.amount > 0 && metrics.errors.includes(holding.name) || undefined}
+                                onValueChange={value => updateHolding(holding.id, { [field]: value })}
+                              />
+                            </TableCell>
+                          ))}
                           {isRedemption ? (
                             <>
                               <TableCell className="text-right font-semibold text-primary">
@@ -2213,10 +2272,8 @@ function PlannerWorkspace({
                     </h2>
                   </div>
                   <Badge variant="outline">
-                    {t('机构表')}
+                    {t('当前机构')}
                     {banks.length}
-                    {t('家 · 备选库')}
-                    {bankLibrary.length}
                     {t('家')}
                   </Badge>
                 </div>
@@ -2226,7 +2283,7 @@ function PlannerWorkspace({
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="text-sm font-semibold text-foreground">
-                          {t('合作机构备选库')}
+                          {t('选择已有机构')}
                         </p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
                           {t('选择后可用于持仓归属和今日报价')}
@@ -2236,18 +2293,18 @@ function PlannerWorkspace({
                     </div>
                     <div className="mt-3 flex gap-2">
                       <NativeSelect
-                        aria-label={t('从合作机构备选库选择')}
-                        value={selectedBankTemplateValid ? selectedBankTemplateId : ''}
+                        aria-label={t('选择已有机构')}
+                        value=""
                         onChange={(event) =>
-                          setSelectedBankTemplateId(event.target.value)
+                          addBankFromLibrary(event.target.value)
                         }
                         className="min-w-0 flex-1"
                       >
                         <NativeSelectOption value="">
                           {t(
                             availableBankTemplates.length
-                              ? '选择备选机构'
-                              : '备选机构已全部加入',
+                              ? '选择后直接加入'
+                              : '已保存机构均已加入',
                           )}
                         </NativeSelectOption>
                         {availableBankTemplates.map((bank) => (
@@ -2258,23 +2315,14 @@ function PlannerWorkspace({
                           </NativeSelectOption>
                         ))}
                       </NativeSelect>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={!selectedBankTemplateValid}
-                        onClick={addBankFromLibrary}
-                      >
-                        <Plus />
-                        {t('加入机构表')}
-                      </Button>
                     </div>
                   </div>
-                </div>
 
                 <div className="rounded-xl border border-border bg-card p-4">
                   <p className="text-sm font-semibold text-foreground">
-                    {t('新增合作机构')}
+                    {t('新增机构')}
                   </p>
+                  <p className="mt-1 text-xs text-muted-foreground">{t('新增后即可用于持仓和报价，并自动保存在本机供下次选择。')}</p>
                   <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto]">
                     <label htmlFor="new-bank-name" className="grid gap-1">
                       <span className="text-xs text-muted-foreground">
@@ -2296,9 +2344,7 @@ function PlannerWorkspace({
                       className={`grid gap-1 rounded-xl border p-2 ${
                         newBankLimitError
                           ? 'border-red-300 bg-red-50'
-                          : newBankLimitNotice
-                            ? 'border-yellow-300 bg-yellow-100/80'
-                            : 'border-transparent'
+                          : 'border-transparent'
                       }`}
                     >
                       <span className="text-xs text-muted-foreground">
@@ -2318,9 +2364,7 @@ function PlannerWorkspace({
                         className={`text-right ${
                           newBankLimitError
                             ? 'border-red-300 bg-red-50 text-red-950'
-                            : newBankLimitNotice
-                              ? 'border-yellow-300 bg-yellow-50 text-foreground'
-                              : ''
+                            : ''
                         }`}
                       />
                       {newBankLimitError ? (
@@ -2331,8 +2375,8 @@ function PlannerWorkspace({
                           {t(newBankLimitError)}
                         </span>
                       ) : newBankLimitNotice ? (
-                        <span className="text-xs font-medium leading-4 text-yellow-800">
-                          {t(newBankLimitNotice)}
+                        <span title={t(newBankLimitNotice)} className="text-xs leading-4 text-amber-700 dark:text-amber-400">
+                          {t('超过一般上限需确认')}
                         </span>
                       ) : null}
                     </label>
@@ -2342,16 +2386,18 @@ function PlannerWorkspace({
                         variant="outline"
                         disabled={
                           !newBankName.trim() ||
+                          banks.some(bank => bank.name.trim().toLocaleLowerCase('zh-CN') === newBankName.trim().toLocaleLowerCase('zh-CN')) ||
                           !Number.isFinite(newBankLimitPct) ||
                           newBankLimitPct < 0 ||
                           newBankLimitPct > SFC_MAX_BANK_CONCENTRATION_PCT
                         }
                         onClick={saveBankToLibrary}
                       >
-                        {t('存入备选库')}
+                        <Plus />{t('新增机构')}
                       </Button>
                     </div>
                   </div>
+                </div>
                 </div>
 
                 {bankExposureTotalError ? (
@@ -2526,9 +2572,7 @@ function PlannerWorkspace({
                             className={`min-w-44 align-top ${
                               concentrationError
                                 ? 'bg-red-50/90'
-                                : concentrationNotice
-                                  ? 'bg-yellow-100/80'
-                                  : ''
+                                : ''
                             }`}
                           >
                             <div className="grid gap-1">
@@ -2551,9 +2595,7 @@ function PlannerWorkspace({
                                 className={`text-right ${
                                   concentrationError
                                     ? 'border-red-300 bg-red-50 text-red-950'
-                                    : concentrationNotice
-                                      ? 'border-yellow-300 bg-yellow-50 text-foreground'
-                                      : ''
+                                    : ''
                                 }`}
                               />
                               {concentrationError ? (
@@ -2564,8 +2606,8 @@ function PlannerWorkspace({
                                   {t(concentrationError)}
                                 </span>
                               ) : concentrationNotice ? (
-                                <span className="block max-w-52 whitespace-normal text-xs font-medium leading-4 text-yellow-800">
-                                  {t(concentrationNotice)}
+                                <span title={t(concentrationNotice)} className="text-xs leading-4 text-amber-700 dark:text-amber-400">
+                                  {t('超过一般上限需确认')}
                                 </span>
                               ) : null}
                             </div>
@@ -2586,7 +2628,7 @@ function PlannerWorkspace({
                                   ? t(
                                       `该机构仍被${referenceSummary}使用；请先改绑或删除关联记录`,
                                     )
-                                  : t('移出机构表，但保留在合作机构备选库')
+                                  : t('从当前测算移除；已保存的机构仍可再次选择')
                               }
                               variant="ghost"
                               size="icon-sm"
@@ -2612,7 +2654,7 @@ function PlannerWorkspace({
                           className="h-20 text-center text-sm text-muted-foreground"
                         >
                           {t(
-                            '请先从合作机构备选库加入需要用于持仓或报价的机构。',
+                            '请先新增机构或选择已有机构。',
                           )}
                         </TableCell>
                       </TableRow>
@@ -2645,7 +2687,7 @@ function PlannerWorkspace({
                     <div className="mt-1">
                       <p>
                         {t(
-                          '被持仓或报价引用的机构不能直接移除；持仓请先在上方改绑，关联报价请返回配置测算界面删除。',
+                          '被持仓或报价引用的机构不能直接移除；持仓请先在上方改绑，关联报价请到今日可投界面删除。',
                         )}
                         {isRedemption
                           ? t(' 当前为净赎回模式，需先切换至净申购后查看报价。')
@@ -2657,9 +2699,9 @@ function PlannerWorkspace({
                           variant="outline"
                           size="sm"
                           className="mt-2 bg-card"
-                          onClick={() => setWorkspaceView('planner')}
+                          onClick={() => setWorkspaceView('quotes')}
                         >
-                          {t('返回配置测算查看报价')}
+                          {t('前往今日可投查看报价')}
                           <ArrowRight />
                         </Button>
                       ) : null}
@@ -2673,9 +2715,9 @@ function PlannerWorkspace({
                 </div>
               </section>
             </>
-          )}
+          ) : null}
 
-          {workspaceView === 'planner' ? (
+          {workspaceView === 'quotes' ? (
             <>
               <section className={card}>
                 <div className="section-head">
@@ -2893,7 +2935,14 @@ function PlannerWorkspace({
                   </>
                 )}
               </section>
+              <Button variant="outline" onClick={() => setWorkspaceView('planner')}>
+                {t('前往配置测算')}<ArrowRight />
+              </Button>
+            </>
+          ) : null}
 
+          {workspaceView === 'planner' ? (
+            <>
               {hasRegulatoryLimitViolation ? (
                 <Alert variant="destructive" aria-live="assertive">
                   <AlertTriangle />
@@ -2932,16 +2981,7 @@ function PlannerWorkspace({
                       : '连续金额优化；未配置资金按零期限、零收益现金处理',
                   )}
                 </div>
-                <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-                  <Button
-                    variant="outline"
-                    size="lg"
-                    onClick={reset}
-                    className="w-full sm:w-auto"
-                  >
-                    <RefreshCcw />
-                    {t('恢复示例')}
-                  </Button>
+                <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
                   <Button
                     size="lg"
                     onClick={calculate}
@@ -3074,7 +3114,7 @@ function PlannerWorkspace({
                     ) : (
                       <FrontierPanel
                         mode={frontierMode}
-                        points={frontiers[frontierMode]}
+                        points={hasHoldingsWorkspaceViolation || frontiers.source?.portfolio !== portfolio || frontiers.source?.banks !== modelBanks || frontiers.source?.quotes !== quotes ? [] : frontiers[frontierMode]}
                         currentLimit={
                           frontierMode === 'wam'
                             ? portfolio.maxWam
@@ -3118,6 +3158,8 @@ function PlannerWorkspace({
                     </AlertTitle>
                   </Alert>
                 </div>
+              ) : dirty ? (
+                <output className="block p-5 text-sm text-muted-foreground">{t('输入已修改，请重新计算以查看最新配置。')}</output>
               ) : result.ok ? (
                 <div
                   aria-live="polite"
@@ -3144,37 +3186,37 @@ function PlannerWorkspace({
                     <Metric
                       label={t('交易后 AUM')}
                       value={`${number(result.postAum)} ${t(amountUnit)}`}
-                      detail={t(
+                      detail={`${t(
                         `${result.tradeMode === 'redemption' ? '赎回' : '新增'} ${number(result.transactionAmount)} ${amountUnit}`,
-                      )}
+                      )} · ${t('交易前 AUM')} ${number(portfolio.aum)} ${t(amountUnit)}`}
                     />
                     <Metric
                       label={t('交易后 YTM')}
                       value={percent(result.postYtm, 3)}
-                      detail={
+                      detail={`${
                         result.tradeMode === 'redemption'
                           ? t('同比例赎回，与当前组合一致')
                           : t(`新增资金 ${percent(result.allocationYield, 3)}`)
-                      }
+                      } · ${t('交易前 YTM')} ${percent(portfolio.ytm, 3)}`}
                       accent
                     />
                     <Metric
                       label={t('交易后 WAM')}
                       value={`${number(result.postWam)}${t('天')}`}
-                      detail={
+                      detail={`${
                         result.tradeMode === 'redemption'
                           ? t('同比例赎回，与当前组合一致')
                           : t(`计算所用上限 ${number(result.appliedMaxWam)} 天`)
-                      }
+                      } · ${t('交易前 WAM')} ${number(portfolio.wam)} ${t('天')}`}
                     />
                     <Metric
                       label={t('交易后 WAL')}
                       value={`${number(result.postWal)}${t('天')}`}
-                      detail={
+                      detail={`${
                         result.tradeMode === 'redemption'
                           ? t('同比例赎回，与当前组合一致')
                           : t(`计算所用上限 ${number(result.appliedMaxWal)} 天`)
-                      }
+                      } · ${t('交易前 WAL')} ${number(portfolio.wal)} ${t('天')}`}
                     />
                   </div>
 
@@ -3337,15 +3379,29 @@ function PlannerWorkspace({
                     </h3>
                     <div className="space-y-4 px-5 pb-5">
                       {result.banks.map((bank) => {
-                        const used =
+                        const stressedPct = bank.stressedPct ?? bank.finalPct;
+                        const currentUsed =
                           bank.limitPct > 0
                             ? Math.min(
                                 100,
-                                ((bank.stressedPct ?? bank.finalPct) /
-                                  bank.limitPct) *
-                                  100,
+                                Math.max(
+                                  0,
+                                  (bank.finalPct / bank.limitPct) * 100,
+                                ),
                               )
                             : 0;
+                        const stressedUsed =
+                          bank.limitPct > 0
+                            ? Math.min(
+                                100,
+                                Math.max(
+                                  currentUsed,
+                                  (stressedPct / bank.limitPct) * 100,
+                                ),
+                              )
+                            : currentUsed;
+                        const pressureWidth = stressedUsed - currentUsed;
+                        const upperLimitWidth = 100 - stressedUsed;
                         const atLimit = bank.remaining <= EPSILON;
                         return (
                           <div key={bank.id}>
@@ -3353,27 +3409,46 @@ function PlannerWorkspace({
                               <span className="font-medium text-foreground/85">
                                 {bank.name}
                               </span>
-                              <span>
-                                {percent(bank.finalPct)}
-                                {bank.stressedPct !== undefined ? (
-                                  <>
-                                    {' '}
-                                    → {percent(bank.stressedPct)}{' '}
-                                    <span className="text-muted-foreground">
-                                      {t('压力后')}
-                                    </span>
-                                  </>
-                                ) : null}{' '}
-                                / {percent(bank.limitPct)}
+                              <span className="tabular-nums">
+                                {bank.stressedPct !== undefined
+                                  ? t('压力')
+                                  : t('当前')}{' '}
+                                {percent(stressedPct)}{' '}
+                                <span className="text-muted-foreground">
+                                  / {t('上限')} {percent(bank.limitPct)}
+                                </span>
                               </span>
                             </div>
-                            <div className="h-2 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="flex h-2 overflow-hidden rounded-full"
+                              aria-label={`${t('当前')} ${percent(bank.finalPct)}，${t('压力')} ${percent(stressedPct)}，${t('上限')} ${percent(bank.limitPct)}`}
+                            >
                               <div
-                                className={`h-full rounded-full ${
-                                  atLimit ? 'bg-amber-500' : 'bg-primary'
-                                }`}
-                                style={{ width: `${used}%` }}
+                                className="h-full bg-primary"
+                                style={{ width: `${currentUsed}%` }}
                               />
+                              <div
+                                className="h-full bg-amber-500"
+                                style={{ width: `${pressureWidth}%` }}
+                              />
+                              <div
+                                className="h-full bg-slate-200 dark:bg-slate-700"
+                                style={{ width: `${upperLimitWidth}%` }}
+                              />
+                            </div>
+                            <div className="mt-1.5 grid grid-cols-3 gap-2 text-[11px] tabular-nums text-muted-foreground">
+                              <span className="flex items-center gap-1">
+                                <span className="size-1.5 shrink-0 rounded-full bg-primary" />
+                                {t('当前')} {percent(bank.finalPct)}
+                              </span>
+                              <span className="flex items-center justify-center gap-1">
+                                <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />
+                                {t('压力')} {percent(stressedPct)}
+                              </span>
+                              <span className="flex items-center justify-end gap-1 text-right">
+                                <span className="size-1.5 shrink-0 rounded-full bg-slate-300 dark:bg-slate-600" />
+                                {t('上限')} {percent(bank.limitPct)}
+                              </span>
                             </div>
                             <div className="mt-1 flex flex-col gap-1 text-xs text-muted-foreground/75 sm:flex-row sm:justify-between">
                               <span>

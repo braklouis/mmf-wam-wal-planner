@@ -1,5 +1,5 @@
 export type TradeMode = 'subscription' | 'redemption';
-export type WorkspaceView = 'planner' | 'holdings';
+export type WorkspaceView = 'planner' | 'holdings' | 'quotes';
 
 export type Portfolio = {
   tradeMode: TradeMode;
@@ -45,6 +45,9 @@ export type Quote = {
 };
 
 export type Holding = {
+  ytm?: number | null;
+  wamDays?: number | null;
+  walDays?: number | null;
   id: string;
   name: string;
   bankId: string | null;
@@ -180,6 +183,7 @@ export const initialBanks: Bank[] = [
 export const initialHoldings: Holding[] = [
   {
     id: 'holding-cash',
+    ytm: 0, wamDays: 0, walDays: 0,
     name: '现金缓冲',
     bankId: null,
     amount: 5,
@@ -187,30 +191,35 @@ export const initialHoldings: Holding[] = [
   },
   {
     id: 'holding-a-90',
+    ytm: 5, wamDays: 90, walDays: 90,
     name: 'A行 90天定存',
     bankId: 'today-bank-a',
     amount: 15,
   },
   {
     id: 'holding-a-30',
+    ytm: 4.2, wamDays: 30, walDays: 30,
     name: 'A行 30天定存',
     bankId: 'today-bank-a',
     amount: 10,
   },
   {
     id: 'holding-b-floating',
+    ytm: 4, wamDays: 30, walDays: 180,
     name: 'B行浮息票据',
     bankId: 'today-bank-b',
     amount: 10,
   },
   {
     id: 'holding-c-7',
+    ytm: 3.2, wamDays: 7, walDays: 7,
     name: 'C机构 7天票据',
     bankId: 'today-bank-c',
     amount: 5,
   },
   {
     id: 'holding-other',
+    ytm: 77 / 55, wamDays: 1015 / 55, walDays: 1515 / 55,
     name: '其他不计单一实体集中度资产',
     bankId: null,
     amount: 55,
@@ -342,7 +351,7 @@ export function bankConcentrationError(value: number) {
   if (!Number.isFinite(value)) return '集中度上限必须是有效数字。';
   if (value < 0) return '集中度上限不得低于 0%。';
   if (value > SFC_MAX_BANK_CONCENTRATION_PCT) {
-    return 'SFC 对单一实体的最高例外上限为 25%；一般上限仍为 10%。';
+    return '对单一实体的最高例外上限为 25%';
   }
   return null;
 }
@@ -409,6 +418,10 @@ export function holdingValidationErrors(
 ) {
   const errors: string[] = [];
   const bankIds = new Set(banks.map((bank) => bank.id));
+  if (bankIds.size !== banks.length) errors.push('机构标识重复，请修正机构数据。');
+  if (new Set(holdings.map(holding => holding.id)).size !== holdings.length) {
+    errors.push('持仓标识重复，请修正持仓数据。');
+  }
 
   holdings.forEach((holding) => {
     if (!holding.name.trim()) errors.push('持仓名称不能为空。');
@@ -721,6 +734,8 @@ export function optimiseSubscription(
   quotes: Quote[],
 ): SubscriptionModelResult {
   const errors: string[] = [];
+  if (new Set(banks.map(bank => bank.id)).size !== banks.length) errors.push('机构标识重复，请修正机构数据。');
+  if (new Set(quotes.map(quote => quote.id)).size !== quotes.length) errors.push('报价标识重复，请修正报价数据。');
   const postAum = portfolio.aum + portfolio.transactionAmount;
   const stress = redemptionStress(portfolio);
   if (stress.error) errors.push(stress.error);
@@ -1581,7 +1596,7 @@ export function parseBankLibrary(raw: string): BankTemplate[] | null {
       return isValid;
     });
 
-    return valid.length ? valid : null;
+    return value.length === 0 ? [] : valid.length ? valid.map(bank => ({ ...bank, name: bank.name.trim() })) : null;
   } catch {
     return null;
   }
