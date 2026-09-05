@@ -10,6 +10,9 @@ export type Portfolio = {
   transactionAmount: number;
   maxWam: number | null;
   maxWal: number | null;
+  redemptionStressPct?: number;
+  redemptionStressAmount?: number | null;
+  cashBufferAmount?: number;
 };
 
 export type Bank = {
@@ -47,6 +50,7 @@ export type Holding = {
   bankId: string | null;
   amount: number;
   isBalancing?: boolean;
+  isCash?: boolean;
 };
 
 export type HoldingOutcome = Holding & {
@@ -59,6 +63,7 @@ export type BankOutcome = ModelBank & {
   finalExposure: number;
   finalPct: number;
   remaining: number;
+  stressedPct?: number;
 };
 
 export type BaseSuccessResult = {
@@ -174,6 +179,13 @@ export const initialBanks: Bank[] = [
 
 export const initialHoldings: Holding[] = [
   {
+    id: 'holding-cash',
+    name: '现金缓冲',
+    bankId: null,
+    amount: 5,
+    isCash: true,
+  },
+  {
     id: 'holding-a-90',
     name: 'A行 90天定存',
     bankId: 'today-bank-a',
@@ -199,9 +211,9 @@ export const initialHoldings: Holding[] = [
   },
   {
     id: 'holding-other',
-    name: '现金及其他不计单一实体集中度资产',
+    name: '其他不计单一实体集中度资产',
     bankId: null,
-    amount: 60,
+    amount: 55,
     isBalancing: true,
   },
 ];
@@ -657,6 +669,43 @@ export function simplex(
   return null;
 }
 
+/** Stress is measured against current AUM; cash is the only supported funding source.
+ * Bank exposures stay unchanged, conservatively including cash held at a bank.
+ */
+export function redemptionStress(portfolio: Portfolio) {
+  const enteredAmount = portfolio.redemptionStressAmount;
+  const usesAmount = enteredAmount !== undefined && enteredAmount !== null;
+  const pct = usesAmount
+    ? portfolio.aum > 0
+      ? (enteredAmount / portfolio.aum) * 100
+      : Number.NaN
+    : (portfolio.redemptionStressPct ?? 0);
+  const cash = portfolio.cashBufferAmount ?? 0;
+  const baseAum =
+    portfolio.aum +
+    (portfolio.tradeMode === 'subscription' ? portfolio.transactionAmount : 0);
+  const redemption = usesAmount ? enteredAmount : (portfolio.aum * pct) / 100;
+  const stressedAum = baseAum - redemption;
+  let error: string | null = null;
+  if (!Number.isFinite(pct) || pct < 0 || pct >= 100)
+    error = '赎回压力必须为 0% 至小于 100% 的有效数字。';
+  else if (!Number.isFinite(cash) || cash < 0 || cash > portfolio.aum)
+    error = '现金缓冲金额无效，请检查当前持仓。';
+  else if (redemption > cash + amountTolerance(redemption, cash))
+    error = '无法计算：压力赎回超过现金缓冲，需要 T+0 可赎回资产及额度信息。';
+  else if (!Number.isFinite(stressedAum) || stressedAum <= 0)
+    error = '压力后 AUM 必须大于 0。';
+  return {
+    pct,
+    cash,
+    redemption,
+    stressedAum,
+    baseAum,
+    remainingCash: cash - redemption,
+    error,
+  };
+}
+
 export function optimiseSubscription(
   portfolio: Portfolio,
   banks: ModelBank[],
@@ -664,6 +713,8 @@ export function optimiseSubscription(
 ): SubscriptionModelResult {
   const errors: string[] = [];
   const postAum = portfolio.aum + portfolio.transactionAmount;
+  const stress = redemptionStress(portfolio);
+  if (stress.error) errors.push(stress.error);
 
   if (!Number.isFinite(portfolio.aum) || portfolio.aum < 0) {
     errors.push('当前 AUM 必须为非负数字。');
@@ -709,7 +760,7 @@ export function optimiseSubscription(
     if (concentrationError) {
       errors.push(`${bank.name || '某机构'}：${concentrationError}`);
     }
-    const finalCap = postAum * (bank.limitPct / 100);
+    const finalCap = stress.stressedAum * (bank.limitPct / 100);
     if (
       Number.isFinite(postAum) &&
       postAum > 0 &&
@@ -718,7 +769,7 @@ export function optimiseSubscription(
       exceedsUpperBound(bank.currentExposure, finalCap)
     ) {
       errors.push(
-        `${bank.name || '某机构'}现有敞口已超过交易后上限，新增配置无法修复。`,
+        `${bank.name || '某机构'}现有敞口已超过压力后金额上限，新增配置无法修复。`,
       );
     }
   });
@@ -807,7 +858,11 @@ export function optimiseSubscription(
   banks.forEach((bank) => {
     matrix.push(quotes.map((quote) => (quote.bankId === bank.id ? 1 : 0)));
     limits.push(
-      Math.max(0, bank.limitPct / 100 - bank.currentExposure / postAum),
+      Math.max(
+        0,
+        ((stress.stressedAum * bank.limitPct) / 100 - bank.currentExposure) /
+          postAum,
+      ),
     );
   });
   quotes.forEach((quote, quoteIndex) => {
@@ -864,12 +919,13 @@ export function optimiseSubscription(
     const transactionChange =
       (allocationShareByBank.get(bank.id) ?? 0) * postAum;
     const finalExposure = bank.currentExposure + transactionChange;
-    const finalCap = postAum * (bank.limitPct / 100);
+    const finalCap = stress.stressedAum * (bank.limitPct / 100);
     return {
       ...bank,
       transactionChange,
       finalExposure,
       finalPct: (finalExposure / postAum) * 100,
+      stressedPct: (finalExposure / stress.stressedAum) * 100,
       remaining: Math.max(0, finalCap - finalExposure),
     };
   });
@@ -898,7 +954,7 @@ export function optimiseSubscription(
     constraintErrors.push('交易后 WAL 超过所选上限。');
   }
   bankOutcomes.forEach((bank) => {
-    const finalCap = postAum * (bank.limitPct / 100);
+    const finalCap = stress.stressedAum * (bank.limitPct / 100);
     if (
       !Number.isFinite(bank.finalPct) ||
       exceedsUpperBound(bank.finalExposure, finalCap)

@@ -274,6 +274,55 @@ const traditionalCharacters: Record<string, string> = {
 };
 
 const englishCopy: Record<string, string> = {
+  赎回压力比例: 'Redemption stress percentage',
+  赎回压力金额: 'Redemption stress amount',
+  '比例与金额自动换算，以最后编辑的一项为准。调整 AUM 时，该项保持不变。':
+    'Percentage and amount convert automatically. The last edited value stays fixed when AUM changes.',
+
+  赎回压力: 'Redemption stress',
+  先留出赎回的空间: 'Make room for redemptions',
+  无法计算: 'Unable to calculate',
+  现金恰好用尽: 'Cash fully used',
+  现金可覆盖: 'Covered by cash',
+  '压力比例以当前 AUM 为基数；仅动用现有现金，机构敞口按不减少保守测算。':
+    'Stress is a percentage of current AUM. Only existing cash funds redemptions; institution exposures conservatively remain unchanged.',
+  手动赎回压力: 'Redemption stress',
+  实际现金缓冲: 'Actual cash buffer',
+  '来自现金持仓，参考目标 5%': 'From cash holdings; reference target 5%',
+  压力赎回金额: 'Stressed redemption',
+  '压力后 AUM': 'Stressed AUM',
+  '配置基准 AUM 减去压力赎回': 'Allocation AUM less stressed redemption',
+  现金缺口: 'Cash shortfall',
+  压力后剩余现金: 'Remaining cash after stress',
+  '需要识别 T+0 可赎回资产': 'Identify assets redeemable on T+0',
+  不包含定存及未来到期资产: 'Excludes term deposits and future maturities',
+  原金额上限: 'Original amount limit',
+  压力后上限: 'Stressed amount limit',
+  最多新增: 'Available to add',
+  已超出: 'Exceeded by',
+  '金额单位：': 'Amount unit: ',
+  '压力后上限用于申购优化、收益前沿和目标收益反推；不改变机构适用上限比例。':
+    'Stressed limits apply to allocation, frontiers and target-yield search. Applicable institution limit percentages remain unchanged.',
+  管理现金持仓: 'Manage cash holdings',
+  持仓类型: 'Holding type',
+  非现金资产: 'Non-cash asset',
+  '现金 · 计入缓冲': 'Cash \u00b7 included in buffer',
+  已触及配置金额上限: 'Allocation amount limit reached',
+  压力后: 'After stress',
+  压力后额度上限: 'Stressed amount limit',
+  现金缓冲: 'Cash buffer',
+  其他不计单一实体集中度资产:
+    'Other assets excluded from institution concentration',
+  '用其他资产补足（不计入现金缓冲）':
+    'Balance with other assets (excluded from cash buffer)',
+  '赎回压力必须为 0% 至小于 100% 的有效数字。':
+    'Redemption stress must be a valid percentage from 0% to less than 100%.',
+  '现金缓冲金额无效，请检查当前持仓。':
+    'Invalid cash buffer. Check current holdings.',
+  '无法计算：压力赎回超过现金缓冲，需要 T+0 可赎回资产及额度信息。':
+    'Unable to calculate: stressed redemption exceeds cash. T+0 redeemable assets and available amounts are required.',
+  '压力后 AUM 必须大于 0。': 'Stressed AUM must be greater than zero.',
+
   'MMF 配置台': 'MMF Planner',
   '基于收益、期限与机构敞口约束的货币市场基金配置规划器':
     'Money market fund allocation planner with yield, maturity and institution exposure constraints',

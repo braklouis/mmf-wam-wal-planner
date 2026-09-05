@@ -103,6 +103,7 @@ import {
   bankConcentrationNotice,
   quoteWamDays,
   postAumOf,
+  redemptionStress,
   postTradeExistingExposure,
   aggregateInstitutionExposures,
   holdingValidationErrors,
@@ -599,9 +600,22 @@ function PlannerWorkspace({
 }) {
   const { t } = useI18n();
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('planner');
-  const [portfolio, setPortfolio] = useState(initialPortfolio);
+  const [portfolioInput, setPortfolio] = useState<Portfolio>({
+    ...initialPortfolio,
+    redemptionStressPct: 2,
+  });
   const [banks, setBanks] = useState(initialBanks);
   const [holdings, setHoldings] = useState(initialHoldings);
+  const portfolio = useMemo(
+    () => ({
+      ...portfolioInput,
+      cashBufferAmount: holdings
+        .filter((h) => h.isCash)
+        .reduce((sum, h) => sum + h.amount, 0),
+    }),
+    [portfolioInput, holdings],
+  );
+  const stress = redemptionStress(portfolio);
   const modelBanks = useMemo(
     () => aggregateInstitutionExposures(banks, holdings),
     [banks, holdings],
@@ -614,14 +628,23 @@ function PlannerWorkspace({
   const [newBankName, setNewBankName] = useState('');
   const [newBankLimitPct, setNewBankLimitPct] = useState(10);
   const [amountUnit, setAmountUnit] = useState<AmountUnit>('百万元');
-  const [result, setResult] = useState<ModelResult>(() =>
+  const [storedResult, setResult] = useState<ModelResult>(() =>
     calculatePlan(
-      initialPortfolio,
+      { ...initialPortfolio, redemptionStressPct: 2, cashBufferAmount: 5 },
       aggregateInstitutionExposures(initialBanks, initialHoldings),
       initialQuotes,
       initialHoldings,
     ),
   );
+  const result: ModelResult =
+    portfolio.tradeMode === 'subscription' && stress.error
+      ? {
+          ok: false,
+          tradeMode: 'subscription',
+          messages: [stress.error],
+          postAum: stress.baseAum,
+        }
+      : storedResult;
   const [dirty, setDirty] = useState(false);
   const [frontierMode, setFrontierMode] = useState<FrontierMode>('wam');
   const [targetYtm, setTargetYtm] = useState<number | null>(null);
@@ -914,7 +937,10 @@ function PlannerWorkspace({
               !bankConcentrationError(bank.limitPct) &&
               Number.isFinite(bank.currentExposure) &&
               postTradeExistingExposure(portfolio, bank.currentExposure) >
-                (postAum * bank.limitPct) / 100 + EPSILON,
+                ((isRedemption ? postAum : stress.stressedAum) *
+                  bank.limitPct) /
+                  100 +
+                  EPSILON,
           )
           .map((bank) => bank.id),
       );
@@ -977,6 +1003,19 @@ function PlannerWorkspace({
     setDirty(true);
     clearTargetOutcome();
   };
+  const updateStress = (mode: 'percent' | 'amount', value: number | null) => {
+    setPortfolio((old) =>
+      mode === 'amount'
+        ? { ...old, redemptionStressAmount: value ?? Number.NaN }
+        : {
+            ...old,
+            redemptionStressPct: value ?? Number.NaN,
+            redemptionStressAmount: null,
+          },
+    );
+    setDirty(true);
+    clearTargetOutcome();
+  };
   const updateBank = (bankId: string, patch: Partial<Bank>) => {
     setBanks((old) =>
       old.map((bank) => (bank.id === bankId ? { ...bank, ...patch } : bank)),
@@ -1015,7 +1054,7 @@ function PlannerWorkspace({
           ...old,
           {
             id: id('holding-other'),
-            name: t('现金及其他不计单一实体集中度资产'),
+            name: t('其他不计单一实体集中度资产'),
             bankId: null,
             amount: holdingBalanceDifference,
             isBalancing: true,
@@ -1106,13 +1145,13 @@ function PlannerWorkspace({
     clearTargetOutcome();
   };
   const reset = () => {
-    setPortfolio(initialPortfolio);
+    setPortfolio({ ...initialPortfolio, redemptionStressPct: 2 });
     setBanks(initialBanks);
     setHoldings(initialHoldings);
     setQuotes(initialQuotes);
     setResult(
       calculatePlan(
-        initialPortfolio,
+        { ...initialPortfolio, redemptionStressPct: 2, cashBufferAmount: 5 },
         aggregateInstitutionExposures(initialBanks, initialHoldings),
         initialQuotes,
         initialHoldings,
@@ -1313,6 +1352,158 @@ function PlannerWorkspace({
         }`}
       >
         <div className="space-y-5">
+          <section className={`${card} overflow-hidden`}>
+            <div className="border-b border-border/60 bg-primary/5 px-5 py-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="eyebrow">CASH BUFFER · {t('赎回压力')}</p>
+                  <h2 className="mt-1 text-lg font-semibold">
+                    {t('先留出赎回的空间')}
+                  </h2>
+                </div>
+                <span
+                  className={`rounded-full px-3 py-1 text-sm font-medium ${stress.error ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary'}`}
+                >
+                  {t(
+                    stress.error
+                      ? '无法计算'
+                      : stress.remainingCash <= EPSILON
+                        ? '现金恰好用尽'
+                        : '现金可覆盖',
+                  )}
+                </span>
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {t(
+                  '压力比例以当前 AUM 为基数；仅动用现有现金，机构敞口按不减少保守测算。',
+                )}
+              </p>
+            </div>
+            <div className="space-y-5 p-5">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <NumberField
+                  label={t('赎回压力比例')}
+                  value={stress.pct}
+                  suffix="%"
+                  min={0}
+                  onChange={(value) => updateStress('percent', value)}
+                />
+                <NumberField
+                  label={t('赎回压力金额')}
+                  value={stress.redemption}
+                  suffix={amountUnit}
+                  min={0}
+                  onChange={(value) => updateStress('amount', value)}
+                />
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {t(
+                  '比例与金额自动换算，以最后编辑的一项为准。调整 AUM 时，该项保持不变。',
+                )}
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Metric
+                  label={t('实际现金缓冲')}
+                  value={`${number(stress.cash)} ${t(amountUnit)}`}
+                  detail={`${percent(portfolio.aum > 0 ? (stress.cash / portfolio.aum) * 100 : 0)} · ${t('来自现金持仓，参考目标 5%')}`}
+                />
+                <Metric
+                  label={t('压力赎回金额')}
+                  value={`${number(stress.redemption)} ${t(amountUnit)}`}
+                  detail={`${t('当前 AUM')} ${number(portfolio.aum)} × ${percent(stress.pct)}`}
+                />
+                <Metric
+                  label={t('压力后 AUM')}
+                  value={`${number(stress.stressedAum)} ${t(amountUnit)}`}
+                  detail={t('配置基准 AUM 减去压力赎回')}
+                  accent={!stress.error}
+                />
+                <Metric
+                  label={t(
+                    stress.remainingCash < 0 ? '现金缺口' : '压力后剩余现金',
+                  )}
+                  value={`${number(Math.abs(stress.remainingCash))} ${t(amountUnit)}`}
+                  detail={t(
+                    stress.remainingCash < 0
+                      ? '需要识别 T+0 可赎回资产'
+                      : '不包含定存及未来到期资产',
+                  )}
+                />
+              </div>
+              {stress.error ? (
+                <div
+                  role="alert"
+                  className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+                >
+                  {t(stress.error)}
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-border/70">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>{t('机构')}</TableHead>
+                        <TableHead className="text-right">
+                          {t('原金额上限')}
+                        </TableHead>
+                        <TableHead className="text-right">
+                          {t('压力后上限')}
+                        </TableHead>
+                        <TableHead className="text-right">
+                          {t('最多新增')}
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {modelBanks.map((bank) => {
+                        const cap = (stress.stressedAum * bank.limitPct) / 100;
+                        return (
+                          <TableRow key={bank.id}>
+                            <TableCell className="font-medium">
+                              {bank.name}
+                              <span className="ml-2 text-muted-foreground">
+                                {percent(bank.limitPct)}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {number((stress.baseAum * bank.limitPct) / 100)}
+                            </TableCell>
+                            <TableCell className="text-right font-semibold">
+                              {number(cap)}
+                            </TableCell>
+                            <TableCell
+                              className={`text-right ${cap < bank.currentExposure ? 'text-destructive' : 'text-primary'}`}
+                            >
+                              {cap < bank.currentExposure
+                                ? `${t('已超出')} ${number(bank.currentExposure - cap)}`
+                                : number(cap - bank.currentExposure)}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+              <p className="text-sm text-muted-foreground">
+                {t('金额单位：')}
+                {t(amountUnit)} ·{' '}
+                {t(
+                  '压力后上限用于申购优化、收益前沿和目标收益反推；不改变机构适用上限比例。',
+                )}
+              </p>
+              {workspaceView === 'planner' && (
+                <Button
+                  variant="outline"
+                  onClick={() => setWorkspaceView('holdings')}
+                >
+                  {t('管理现金持仓')}
+                  <ArrowRight />
+                </Button>
+              )}
+            </div>
+          </section>
+
           {workspaceView === 'planner' ? (
             <section className={card}>
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-4">
@@ -1581,7 +1772,7 @@ function PlannerWorkspace({
                             className="mt-3 border-red-300 bg-card text-red-800 hover:bg-red-50 dark:hover:bg-red-950/45"
                             onClick={fillHoldingShortfall}
                           >
-                            {t('用现金及其他补足（需确认不计入集中度）')}{' '}
+                            {t('用其他资产补足（不计入现金缓冲）')}{' '}
                             {number(holdingBalanceDifference, 8)}{' '}
                             {t(amountUnit)}
                           </Button>
@@ -1661,6 +1852,21 @@ function PlannerWorkspace({
                                   })
                                 }
                               />
+                              <NativeSelect
+                                aria-label={t('持仓类型')}
+                                disabled={holding.isBalancing}
+                                value={holding.isCash ? 'cash' : 'asset'}
+                                onChange={(event) =>
+                                  updateHolding(holding.id, {
+                                    isCash: event.target.value === 'cash',
+                                  })
+                                }
+                              >
+                                <option value="asset">{t('非现金资产')}</option>
+                                <option value="cash">
+                                  {t('现金 · 计入缓冲')}
+                                </option>
+                              </NativeSelect>
                               {nameInvalid ? (
                                 <span
                                   role="alert"
@@ -2018,7 +2224,7 @@ function PlannerWorkspace({
                         </span>
                       </TableHead>
                       <TableHead className="text-right">
-                        {t(isRedemption ? '赎回后持仓' : '交易后额度上限')}
+                        {t(isRedemption ? '赎回后持仓' : '压力后额度上限')}
                         <span className="block text-[11px] font-normal text-muted-foreground/75">
                           {t('绝对金额/')}
                           {t(amountUnit)}
@@ -2044,7 +2250,13 @@ function PlannerWorkspace({
                       );
                       const finalCap = concentrationError
                         ? Number.NaN
-                        : (postAum * bank.limitPct) / 100;
+                        : ((isRedemption
+                            ? postAum
+                            : stress.error
+                              ? Number.NaN
+                              : stress.stressedAum) *
+                            bank.limitPct) /
+                          100;
                       const postTradeExposure = postTradeExistingExposure(
                         portfolio,
                         bank.currentExposure,
@@ -2968,10 +3180,12 @@ function PlannerWorkspace({
                           bank.limitPct > 0
                             ? Math.min(
                                 100,
-                                (bank.finalPct / bank.limitPct) * 100,
+                                ((bank.stressedPct ?? bank.finalPct) /
+                                  bank.limitPct) *
+                                  100,
                               )
                             : 0;
-                        const atLimit = bank.finalPct >= bank.limitPct - 1e-7;
+                        const atLimit = bank.remaining <= EPSILON;
                         return (
                           <div key={bank.id}>
                             <div className="mb-1.5 flex flex-col gap-1 text-sm sm:flex-row sm:justify-between">
@@ -2979,8 +3193,17 @@ function PlannerWorkspace({
                                 {bank.name}
                               </span>
                               <span>
-                                {percent(bank.finalPct)} /{' '}
-                                {percent(bank.limitPct)}
+                                {percent(bank.finalPct)}
+                                {bank.stressedPct !== undefined ? (
+                                  <>
+                                    {' '}
+                                    → {percent(bank.stressedPct)}{' '}
+                                    <span className="text-muted-foreground">
+                                      {t('压力后')}
+                                    </span>
+                                  </>
+                                ) : null}{' '}
+                                / {percent(bank.limitPct)}
                               </span>
                             </div>
                             <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -3011,7 +3234,7 @@ function PlannerWorkspace({
                               </span>
                               <span>
                                 {atLimit
-                                  ? t('已触及上限')
+                                  ? t('已触及配置金额上限')
                                   : t(
                                       `余量 ${number(bank.remaining)} ${amountUnit}`,
                                     )}
