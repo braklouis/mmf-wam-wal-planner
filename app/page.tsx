@@ -13,9 +13,11 @@ import {
   Calculator,
   Check,
   Landmark,
+  Moon,
   Plus,
   RefreshCcw,
   ShieldCheck,
+  Sun,
   TrendingUp,
   Trash2,
 } from 'lucide-react';
@@ -29,6 +31,7 @@ import {
   YAxis,
 } from 'recharts';
 
+import { I18nProvider, useI18n } from '@/components/i18n-provider';
 import { Alert, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -52,6 +55,21 @@ import {
   TableRow,
 } from '@/components/ui/table';
 
+import {
+  DEFAULT_LOCALE,
+  DEFAULT_THEME,
+  LOCALE_STORAGE_KEY,
+  THEME_STORAGE_KEY,
+  htmlLang,
+  localeOptions,
+  parseLocale,
+  parseTheme,
+  readStoredPreference,
+  translateText,
+  type Locale,
+  type Theme,
+  writeStoredPreference,
+} from '@/lib/i18n';
 import {
   type TradeMode,
   type WorkspaceView,
@@ -191,6 +209,7 @@ function NumberField({
   warning?: string | null;
   warningTone?: 'yellow' | 'red';
 }) {
+  const { t } = useI18n();
   const fallbackError =
     value === null
       ? optional
@@ -213,10 +232,12 @@ function NumberField({
             : 'border-transparent'
       }`}
     >
-      <span className="flex justify-between text-sm font-medium text-slate-700">
-        {label}
+      <span className="flex justify-between text-sm font-medium text-foreground/85">
+        {t(label)}
         {optional ? (
-          <span className="text-xs font-normal text-slate-400">可留空</span>
+          <span className="text-xs font-normal text-muted-foreground/75">
+            {t('可留空')}
+          </span>
         ) : null}
       </span>
       <span className="relative">
@@ -231,17 +252,17 @@ function NumberField({
             isRed
               ? 'border-red-300 bg-red-50 text-red-950 focus-visible:border-red-500 focus-visible:ring-red-500/15'
               : isYellow
-                ? 'border-yellow-300 bg-yellow-50 text-slate-950 focus-visible:border-yellow-500 focus-visible:ring-yellow-500/15'
-                : 'border-slate-200 bg-white focus-visible:border-teal-600 focus-visible:ring-teal-600/15'
+                ? 'border-yellow-300 bg-yellow-50 text-foreground focus-visible:border-yellow-500 focus-visible:ring-yellow-500/15'
+                : 'border-border bg-card focus-visible:border-primary focus-visible:ring-primary/20'
           }`}
         />
-        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-slate-400">
-          {suffix}
+        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground/75">
+          {t(suffix)}
         </span>
       </span>
       {validationError ? (
         <span role="alert" className="text-xs font-medium text-red-600">
-          {validationError}
+          {t(validationError)}
         </span>
       ) : warning ? (
         <span
@@ -250,7 +271,7 @@ function NumberField({
             warningTone === 'red' ? 'text-red-700' : 'text-yellow-800'
           }`}
         >
-          {warning}
+          {t(warning)}
         </span>
       ) : null}
     </label>
@@ -268,27 +289,26 @@ function Metric({
   detail: string;
   accent?: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div
       className={`rounded-2xl border p-4 ${
-        accent
-          ? 'border-teal-200 bg-teal-50/80'
-          : 'border-slate-200 bg-slate-50/70'
+        accent ? 'border-primary/35 bg-accent/70' : 'border-border bg-muted/40'
       }`}
     >
-      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-        {label}
+      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+        {t(label)}
       </p>
-      <p className="mt-2 text-2xl font-semibold tracking-tight">{value}</p>
-      <p className="mt-1 text-xs text-slate-500">{detail}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight">{t(value)}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{t(detail)}</p>
     </div>
   );
 }
 
 const frontierChartConfig = {
   ytm: {
-    label: '最高 YTM',
-    color: '#0d9488',
+    label: 'YTM',
+    color: 'var(--chart-1)',
   },
 } satisfies ChartConfig;
 
@@ -315,10 +335,11 @@ function FrontierPanel({
   onSolveTarget: () => void;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const label = mode.toUpperCase();
   const targetControl = (
     <form
-      className="mt-4 rounded-2xl border border-teal-100 bg-teal-50/60 p-4"
+      className="mt-4 rounded-2xl border border-primary/25 bg-accent/50 p-4"
       onSubmit={(event) => {
         event.preventDefault();
         onSolveTarget();
@@ -326,26 +347,26 @@ function FrontierPanel({
     >
       <div className="flex flex-wrap items-end gap-3">
         <label htmlFor="target-ytm" className="min-w-44 flex-1">
-          <span className="mb-1.5 block text-sm font-semibold text-slate-800">
-            目标交易后 YTM
+          <span className="mb-1.5 block text-sm font-semibold text-foreground">
+            {t('目标交易后 YTM')}
           </span>
           <span className="relative block">
             <EditableNumberInput
               id="target-ytm"
-              aria-label="目标交易后YTM百分比"
+              aria-label={t('目标交易后YTM百分比')}
               aria-invalid={targetYtmError ? true : undefined}
               value={targetYtm}
               step="0.001"
               disabled={disabled}
-              placeholder="例如 3.000"
+              placeholder={t('例如 3.000')}
               onValueChange={onTargetYtmChange}
               className={`h-10 rounded-xl pr-9 text-base ${
                 targetYtmError
                   ? 'border-red-300 bg-red-50 text-red-950'
-                  : 'border-teal-200 bg-white focus-visible:border-teal-600 focus-visible:ring-teal-600/15'
+                  : 'border-primary/35 bg-card focus-visible:border-primary focus-visible:ring-primary/20'
               }`}
             />
-            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-slate-400">
+            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground/75">
               %
             </span>
           </span>
@@ -353,25 +374,24 @@ function FrontierPanel({
         <Button
           type="submit"
           disabled={disabled || targetYtm === null}
-          className="bg-teal-600 text-white hover:bg-teal-700"
+          className="bg-primary text-primary-foreground hover:bg-primary/90"
         >
-          反推期限与配置比例 <ArrowRight />
+          {t('反推期限与配置比例')}
+          <ArrowRight />
         </Button>
       </div>
-      <p className="mt-2 text-xs leading-5 text-slate-500">
-        目标按“至少达到”处理；系统反推所选 {label}{' '}
-        的最短上限和产品比例，另一项当前上限及 SFC 硬上限继续生效。
+      <p className="mt-2 text-xs leading-5 text-muted-foreground">
+        {t('目标按“至少达到”处理；系统反推所选')}
+        {label}{' '}
+        {t('的最短上限和产品比例，另一项当前上限及 SFC 硬上限继续生效。')}
       </p>
       {targetYtmError ? (
         <p role="alert" className="mt-2 text-xs font-medium text-red-700">
-          {targetYtmError}
+          {t(targetYtmError)}
         </p>
       ) : targetYtmMessage ? (
-        <p
-          aria-live="polite"
-          className="mt-2 text-xs font-medium text-teal-800"
-        >
-          {targetYtmMessage}
+        <p aria-live="polite" className="mt-2 text-xs font-medium text-primary">
+          {t(targetYtmMessage)}
         </p>
       ) : null}
     </form>
@@ -383,8 +403,8 @@ function FrontierPanel({
         <Alert variant="destructive">
           <AlertTriangle />
           <AlertTitle>
-            当前组合在 SFC 的 {label}{' '}
-            区间内没有可行点，请先放宽另一项期限约束或检查输入。
+            {t('当前组合在 SFC 的')}
+            {label} {t('区间内没有可行点，请先放宽另一项期限约束或检查输入。')}
           </AlertTitle>
         </Alert>
         {targetControl}
@@ -422,7 +442,7 @@ function FrontierPanel({
               axisLine={false}
               tickMargin={10}
               tickCount={7}
-              unit="天"
+              unit={t('天')}
             />
             <YAxis
               dataKey="ytm"
@@ -435,29 +455,39 @@ function FrontierPanel({
               tickFormatter={(value) => `${Number(value).toFixed(2)}%`}
             />
             <ChartTooltip
-              cursor={{ stroke: '#94a3b8', strokeDasharray: '4 4' }}
+              cursor={{
+                stroke: 'var(--muted-foreground)',
+                strokeDasharray: '4 4',
+              }}
               content={
                 <ChartTooltipContent
                   hideLabel
                   formatter={(value, _name, item) => (
                     <div className="grid min-w-36 gap-1">
-                      <span className="text-slate-500">
-                        {label} 上限 {number(item.payload.day)} 天
+                      <span className="text-muted-foreground">
+                        {label}
+                        {t('上限')}
+                        {number(item.payload.day)}
+                        {t('天')}
                       </span>
-                      <span className="font-semibold text-slate-950">
-                        最高 YTM {percent(Number(value), 3)}
+                      <span className="font-semibold text-foreground">
+                        {t('最高 YTM')}
+                        {percent(Number(value), 3)}
                       </span>
-                      <span className="text-slate-500">
-                        实际 WAM {number(item.payload.wam)} 天 · WAL{' '}
-                        {number(item.payload.wal)} 天
+                      <span className="text-muted-foreground">
+                        {t('实际 WAM')}
+                        {number(item.payload.wam)}
+                        {t('天 · WAL')} {number(item.payload.wal)}
+                        {t('天')}
                       </span>
-                      <span className="text-teal-700">
-                        较最紧点 +
+                      <span className="text-primary">
+                        {t('较最紧点 +')}
                         {number((item.payload.ytm - first.ytm) * 100, 1)} bp
                       </span>
                       {item.payload.bindingConstraints?.length ? (
-                        <span className="max-w-56 text-slate-500">
-                          约束：{item.payload.bindingConstraints.join('、')}
+                        <span className="max-w-56 text-muted-foreground">
+                          {t('约束：')}
+                          {item.payload.bindingConstraints.map(t).join(t('、'))}
                         </span>
                       ) : null}
                     </div>
@@ -469,12 +499,12 @@ function FrontierPanel({
               <ReferenceLine
                 x={currentLimit}
                 ifOverflow="extendDomain"
-                stroke="#f59e0b"
+                stroke="var(--chart-2)"
                 strokeDasharray="5 4"
                 label={{
-                  value: '当前选择',
+                  value: t('当前选择'),
                   position: 'insideTopRight',
-                  fill: '#b45309',
+                  fill: 'var(--chart-2)',
                   fontSize: 12,
                 }}
               />
@@ -482,7 +512,7 @@ function FrontierPanel({
             {hasPlateau ? (
               <ReferenceLine
                 x={plateau.day}
-                stroke="#64748b"
+                stroke="var(--muted-foreground)"
                 strokeDasharray="3 4"
               />
             ) : null}
@@ -492,12 +522,12 @@ function FrontierPanel({
             targetYtm <= last.ytm + 0.0001 ? (
               <ReferenceLine
                 y={targetYtm}
-                stroke="#0f766e"
+                stroke="var(--primary)"
                 strokeDasharray="3 4"
                 label={{
-                  value: '目标 YTM',
+                  value: t('目标 YTM'),
                   position: 'insideBottomLeft',
-                  fill: '#0f766e',
+                  fill: 'var(--primary)',
                   fontSize: 12,
                 }}
               />
@@ -510,8 +540,8 @@ function FrontierPanel({
               dot={false}
               activeDot={{
                 r: 6,
-                fill: '#0d9488',
-                stroke: '#ffffff',
+                fill: 'var(--chart-1)',
+                stroke: 'var(--card)',
                 strokeWidth: 3,
               }}
             />
@@ -520,27 +550,32 @@ function FrontierPanel({
                 x={plateau.day}
                 y={plateau.ytm}
                 r={5}
-                fill="#ffffff"
-                stroke="#0d9488"
+                fill="var(--card)"
+                stroke="var(--chart-1)"
                 strokeWidth={3}
               />
             ) : null}
           </LineChart>
         </ChartContainer>
         {hasPlateau ? (
-          <p className="mt-2 flex flex-wrap items-center justify-center gap-2 text-sm font-semibold text-teal-700">
+          <p className="mt-2 flex flex-wrap items-center justify-center gap-2 text-sm font-semibold text-primary">
             <span
               aria-hidden="true"
-              className="h-2 w-2 rounded-full bg-teal-600"
+              className="h-2 w-2 rounded-full bg-primary"
             />
             <span>
-              坐标（{number(plateau.day)} 天，{percent(plateau.ytm, 3)}）· 最大
-              YTM
+              {t('坐标（')}
+              {number(plateau.day)}
+              {t('天，')}
+              {percent(plateau.ytm, 3)}
+              {t('）· 最大 YTM')}
             </span>
           </p>
         ) : null}
-        <p className="mt-1 text-center text-xs text-slate-400">
-          点击曲线上的位置，即可采用对应的 {label} 上限并重新计算
+        <p className="mt-1 text-center text-xs text-muted-foreground/75">
+          {t('点击曲线上的位置，即可采用对应的')}
+          {label}
+          {t('上限并重新计算')}
         </p>
         {targetControl}
       </div>
@@ -549,9 +584,20 @@ function FrontierPanel({
 }
 
 const card =
-  'rounded-2xl border border-slate-200 bg-white shadow-[0_8px_30px_rgba(15,23,42,0.04)]';
+  'rounded-2xl border border-border bg-card shadow-[0_8px_30px_rgba(15,23,42,0.04)] dark:shadow-black/20';
 
-export default function Home() {
+function PlannerWorkspace({
+  locale,
+  theme,
+  onLocaleChange,
+  onThemeToggle,
+}: {
+  locale: Locale;
+  theme: Theme;
+  onLocaleChange: (locale: Locale) => void;
+  onThemeToggle: () => void;
+}) {
+  const { t } = useI18n();
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('planner');
   const [portfolio, setPortfolio] = useState(initialPortfolio);
   const [banks, setBanks] = useState(initialBanks);
@@ -632,9 +678,10 @@ export default function Home() {
     const registration = context.registerTool(
       {
         name: 'calculate_current_mmf_allocation',
-        title: '计算当前 MMF 配置',
-        description:
+        title: t('计算当前 MMF 配置'),
+        description: t(
           '使用页面当前填写的组合、当前持仓、机构上限、交易方向和报价，计算申购配置或同比例赎回影响。',
+        ),
         inputSchema: {
           type: 'object',
           properties: {},
@@ -659,7 +706,7 @@ export default function Home() {
               ok: false,
               tradeMode: nextResult.tradeMode,
               postAum: nextResult.postAum,
-              messages: nextResult.messages,
+              messages: nextResult.messages.map(t),
             };
           }
           if (nextResult.tradeMode === 'redemption') {
@@ -713,7 +760,7 @@ export default function Home() {
     );
     void Promise.resolve(registration).catch(() => {});
     return () => lifecycle.abort();
-  }, []);
+  }, [t]);
 
   const isRedemption = portfolio.tradeMode === 'redemption';
   const postAum = postAumOf(portfolio);
@@ -968,7 +1015,7 @@ export default function Home() {
           ...old,
           {
             id: id('holding-other'),
-            name: '现金及其他不计单一实体集中度资产',
+            name: t('现金及其他不计单一实体集中度资产'),
             bankId: null,
             amount: holdingBalanceDifference,
             isBalancing: true,
@@ -1124,48 +1171,94 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-100 text-slate-950">
+    <main className="min-h-screen bg-background text-foreground">
       <header className="border-b border-slate-800 bg-[#0b2431] text-white">
-        <div className="mx-auto flex max-w-[1540px] flex-wrap items-center justify-between gap-4 px-4 py-5 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-3">
-            <div className="grid size-10 place-items-center rounded-xl bg-teal-400 text-slate-950">
-              <Calculator className="size-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-semibold tracking-tight">
-                  MMF 配置台
-                </h1>
-                <Badge className="border border-white/10 bg-white/10 text-teal-100">
-                  本地草案
-                </Badge>
-              </div>
-              <p className="mt-0.5 text-sm text-slate-300">
-                {workspaceView === 'holdings'
-                  ? '集中维护持仓、机构归属与集中度上限'
-                  : isRedemption
-                    ? '测算同比例赎回后的组合与机构敞口'
-                    : '在期限与机构集中度约束内，寻找最高收益配置'}
-              </p>
-            </div>
+        <div className="mx-auto max-w-[1540px] px-4 py-3 sm:px-6 lg:px-8">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <fieldset
+              aria-label={t('界面语言')}
+              className="inline-flex rounded-lg border border-white/15 bg-white/5 p-0.5"
+            >
+              {localeOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={locale === option.value}
+                  aria-label={option.nativeLabel}
+                  lang={option.value}
+                  title={option.nativeLabel}
+                  onClick={() => onLocaleChange(option.value)}
+                  className={`min-w-9 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 ${
+                    locale === option.value
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  {option.shortLabel}
+                </button>
+              ))}
+            </fieldset>
+            <button
+              type="button"
+              aria-pressed={theme === 'dark'}
+              aria-label={t(
+                theme === 'dark' ? '切换至浅色模式' : '切换至深色模式',
+              )}
+              title={t(theme === 'dark' ? '切换至浅色模式' : '切换至深色模式')}
+              onClick={onThemeToggle}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300"
+            >
+              {theme === 'dark' ? (
+                <Sun className="size-3.5" />
+              ) : (
+                <Moon className="size-3.5" />
+              )}
+              <span>{theme === 'dark' ? t('浅色') : t('深色')}</span>
+            </button>
           </div>
-          <div className="flex flex-wrap gap-2 text-xs text-slate-300">
-            <span className="rounded-full border border-white/10 px-3 py-1.5">
-              WAM 利率敏感度 · WAL 最终到期
-            </span>
-            <span className="rounded-full border border-white/10 px-3 py-1.5">
-              金额字段 = 绝对金额 · % 字段 = 占比
-            </span>
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="grid size-10 place-items-center rounded-xl bg-teal-400 text-[#0b2431]">
+                <Calculator className="size-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-xl font-semibold tracking-tight">
+                    {t('MMF 配置台')}
+                  </h1>
+                  <Badge className="border border-white/10 bg-white/10 text-teal-100">
+                    {t('本地草案')}
+                  </Badge>
+                </div>
+                <p className="mt-0.5 text-sm text-slate-300">
+                  {t(
+                    workspaceView === 'holdings'
+                      ? '集中维护持仓、机构归属与集中度上限'
+                      : isRedemption
+                        ? '测算同比例赎回后的组合与机构敞口'
+                        : '在期限与机构集中度约束内，寻找最高收益配置',
+                  )}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs text-slate-300">
+              <span className="rounded-full border border-white/10 px-3 py-1.5">
+                {t('WAM 利率敏感度 · WAL 最终到期')}
+              </span>
+              <span className="rounded-full border border-white/10 px-3 py-1.5">
+                {t('金额字段 = 绝对金额 · % 字段 = 占比')}
+              </span>
+            </div>
           </div>
         </div>
       </header>
 
       <nav
-        aria-label="配置台工作区"
-        className="border-b border-slate-200 bg-white"
+        aria-label={t('配置台工作区')}
+        className="border-b border-border bg-card"
       >
         <div className="mx-auto flex max-w-[1540px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
-          <div className="inline-flex rounded-xl bg-slate-100 p-1">
+          <div className="inline-flex rounded-xl bg-muted p-1">
             <Button
               type="button"
               variant="ghost"
@@ -1173,12 +1266,13 @@ export default function Home() {
               aria-pressed={workspaceView === 'planner'}
               className={
                 workspaceView === 'planner'
-                  ? 'bg-white text-slate-950 shadow-sm hover:bg-white'
-                  : 'text-slate-500 hover:text-slate-900'
+                  ? 'bg-card text-foreground shadow-sm hover:bg-card'
+                  : 'text-muted-foreground hover:text-foreground'
               }
               onClick={() => setWorkspaceView('planner')}
             >
-              <Calculator /> 配置测算
+              <Calculator />
+              {t('配置测算')}
             </Button>
             <Button
               type="button"
@@ -1187,12 +1281,13 @@ export default function Home() {
               aria-pressed={workspaceView === 'holdings'}
               className={
                 workspaceView === 'holdings'
-                  ? 'bg-white text-slate-950 shadow-sm hover:bg-white'
-                  : 'text-slate-500 hover:text-slate-900'
+                  ? 'bg-card text-foreground shadow-sm hover:bg-card'
+                  : 'text-muted-foreground hover:text-foreground'
               }
               onClick={() => setWorkspaceView('holdings')}
             >
-              <Landmark /> 当前持仓与机构
+              <Landmark />
+              {t('当前持仓与机构')}
               {hasHoldingsWorkspaceViolation ? (
                 <span className="grid min-w-5 place-items-center rounded-full bg-red-100 px-1 text-[11px] font-semibold text-red-700">
                   {holdingErrors.length || '!'}
@@ -1200,10 +1295,12 @@ export default function Home() {
               ) : null}
             </Button>
           </div>
-          <p className="text-xs text-slate-500">
-            {workspaceView === 'holdings'
-              ? '持仓、合作机构库及集中度设置在此统一维护'
-              : '组合参数、市场报价与优化结果'}
+          <p className="text-xs text-muted-foreground">
+            {t(
+              workspaceView === 'holdings'
+                ? '持仓、合作机构库及集中度设置在此统一维护'
+                : '组合参数、市场报价与优化结果',
+            )}
           </p>
         </div>
       </nav>
@@ -1218,16 +1315,18 @@ export default function Home() {
         <div className="space-y-5">
           {workspaceView === 'planner' ? (
             <section className={card}>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-4">
                 <div>
-                  <p className="eyebrow">01 · 组合参数</p>
-                  <h2 className="mt-1 text-lg font-semibold">当前组合与目标</h2>
+                  <p className="eyebrow">{t('01 · 组合参数')}</p>
+                  <h2 className="mt-1 text-lg font-semibold">
+                    {t('当前组合与目标')}
+                  </h2>
                 </div>
                 <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-2 text-xs text-slate-500">
-                    统一金额单位
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    {t('统一金额单位')}
                     <NativeSelect
-                      aria-label="统一金额单位"
+                      aria-label={t('统一金额单位')}
                       size="sm"
                       value={amountUnit}
                       onChange={(event) =>
@@ -1238,30 +1337,33 @@ export default function Home() {
                       {(['元', '万元', '百万元', '亿元'] as const).map(
                         (unit) => (
                           <NativeSelectOption value={unit} key={unit}>
-                            {unit}
+                            {t(unit)}
                           </NativeSelectOption>
                         ),
                       )}
                     </NativeSelect>
                   </label>
                   <Badge variant="outline">
-                    交易后 AUM {number(postAum)} {amountUnit}
+                    {t('交易后 AUM')}
+                    {number(postAum)} {t(amountUnit)}
                   </Badge>
                 </div>
               </div>
-              <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50/70 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-3 border-b border-border/60 bg-muted/40 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="text-sm font-semibold text-slate-800">
-                    今日资金方向
+                  <p className="text-sm font-semibold text-foreground">
+                    {t('今日资金方向')}
                   </p>
-                  <p className="mt-0.5 text-xs text-slate-500">
-                    {isRedemption
-                      ? '第一版按当前组合所有资产同比例赎回'
-                      : '将新增资金配置到今日可投产品'}
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {t(
+                      isRedemption
+                        ? '第一版按当前组合所有资产同比例赎回'
+                        : '将新增资金配置到今日可投产品',
+                    )}
                   </p>
                 </div>
-                <fieldset className="grid w-full grid-cols-2 rounded-xl bg-slate-200/70 p-1 sm:w-auto">
-                  <legend className="sr-only">选择今日资金方向</legend>
+                <fieldset className="grid w-full grid-cols-2 rounded-xl bg-muted p-1 sm:w-auto">
+                  <legend className="sr-only">{t('选择今日资金方向')}</legend>
                   {(
                     [
                       ['subscription', '净申购'],
@@ -1275,18 +1377,18 @@ export default function Home() {
                       onClick={() => changeTradeMode(mode)}
                       className={`rounded-lg px-5 py-2 text-sm font-semibold transition-colors ${
                         portfolio.tradeMode === mode
-                          ? 'bg-white text-slate-950 shadow-sm'
-                          : 'text-slate-500 hover:text-slate-800'
+                          ? 'bg-card text-foreground shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
-                      {label}
+                      {t(label)}
                     </button>
                   ))}
                 </fieldset>
               </div>
               <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
                 <NumberField
-                  label="当前 AUM（绝对金额）"
+                  label={t('当前 AUM（绝对金额）')}
                   value={portfolio.aum}
                   suffix={amountUnit}
                   min={0}
@@ -1296,11 +1398,11 @@ export default function Home() {
                   }
                 />
                 <NumberField
-                  label={
+                  label={t(
                     isRedemption
                       ? '净赎回金额（绝对金额）'
-                      : '新增待配置资金（绝对金额）'
-                  }
+                      : '新增待配置资金（绝对金额）',
+                  )}
                   value={portfolio.transactionAmount}
                   suffix={amountUnit}
                   min={0}
@@ -1315,7 +1417,7 @@ export default function Home() {
                   }
                 />
                 <NumberField
-                  label="当前 YTM"
+                  label={t('当前 YTM')}
                   value={portfolio.ytm}
                   suffix="%"
                   onChange={(value) =>
@@ -1323,9 +1425,9 @@ export default function Home() {
                   }
                 />
                 <NumberField
-                  label="当前 WAM"
+                  label={t('当前 WAM')}
                   value={portfolio.wam}
-                  suffix="天"
+                  suffix={t('天')}
                   min={0}
                   error={currentWamInputError}
                   warning={currentWamWarning}
@@ -1335,9 +1437,9 @@ export default function Home() {
                   }
                 />
                 <NumberField
-                  label="当前 WAL"
+                  label={t('当前 WAL')}
                   value={portfolio.wal}
-                  suffix="天"
+                  suffix={t('天')}
                   min={0}
                   error={currentWalInputError}
                   warning={currentWalWarning}
@@ -1347,9 +1449,9 @@ export default function Home() {
                   }
                 />
                 <NumberField
-                  label={isRedemption ? 'WAM 上限（合规检验）' : 'WAM 上限'}
+                  label={t(isRedemption ? 'WAM 上限（合规检验）' : 'WAM 上限')}
                   value={portfolio.maxWam}
-                  suffix="天"
+                  suffix={t('天')}
                   optional
                   min={0}
                   max={SFC_MAX_WAM_DAYS}
@@ -1357,9 +1459,9 @@ export default function Home() {
                   onChange={(value) => updatePortfolio('maxWam', value)}
                 />
                 <NumberField
-                  label={isRedemption ? 'WAL 上限（合规检验）' : 'WAL 上限'}
+                  label={t(isRedemption ? 'WAL 上限（合规检验）' : 'WAL 上限')}
                   value={portfolio.maxWal}
-                  suffix="天"
+                  suffix={t('天')}
                   optional
                   min={0}
                   max={SFC_MAX_WAL_DAYS}
@@ -1367,21 +1469,18 @@ export default function Home() {
                   onChange={(value) => updatePortfolio('maxWal', value)}
                 />
               </div>
-              <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
+              <p className="border-t border-border/60 px-5 py-3 text-xs leading-5 text-muted-foreground">
                 {isRedemption ? (
                   <>
-                    所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM
-                    −
-                    净赎回金额。当前版本假设所有资产及机构敞口按相同比例缩减，因此
-                    YTM、WAM、WAL 与机构占比保持不变；已有超限也不会被修复。
+                    {t(
+                      '所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM − 净赎回金额。当前版本假设所有资产及机构敞口按相同比例缩减，因此 YTM、WAM、WAL 与机构占比保持不变；已有超限也不会被修复。',
+                    )}
                   </>
                 ) : (
                   <>
-                    所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM
-                    + 新增待配置资金；新增资金尚未包含在当前 AUM 中。当前
-                    WAM/WAL
-                    是事实快照，超标时仍可录入以测算修复方案；目标留空时仍自动执行
-                    SFC 监管上限 WAM 60 天、WAL 120 天。
+                    {t(
+                      '所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM + 新增待配置资金；新增资金尚未包含在当前 AUM 中。当前 WAM/WAL 是事实快照，超标时仍可录入以测算修复方案；目标留空时仍自动执行 SFC 监管上限 WAM 60 天、WAL 120 天。',
+                    )}
                   </>
                 )}
               </p>
@@ -1389,10 +1488,12 @@ export default function Home() {
           ) : (
             <>
               <section className={card}>
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-4">
                   <div>
-                    <p className="eyebrow">持仓工作区</p>
-                    <h2 className="mt-1 text-lg font-semibold">当前口径</h2>
+                    <p className="eyebrow">{t('持仓工作区')}</p>
+                    <h2 className="mt-1 text-lg font-semibold">
+                      {t('当前口径')}
+                    </h2>
                   </div>
                   <Button
                     type="button"
@@ -1400,52 +1501,59 @@ export default function Home() {
                     size="sm"
                     onClick={() => setWorkspaceView('planner')}
                   >
-                    修改组合参数 <ArrowRight />
+                    {t('修改组合参数')}
+                    <ArrowRight />
                   </Button>
                 </div>
                 <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-4">
                   <Metric
-                    label="当前 AUM"
-                    value={`${number(portfolio.aum)} ${amountUnit}`}
-                    detail="持仓金额需与此口径对账"
+                    label={t('当前 AUM')}
+                    value={`${number(portfolio.aum)} ${t(amountUnit)}`}
+                    detail={t('持仓金额需与此口径对账')}
                   />
                   <Metric
-                    label="持仓合计"
-                    value={`${number(holdingTotal)} ${amountUnit}`}
+                    label={t('持仓合计')}
+                    value={`${number(holdingTotal)} ${t(amountUnit)}`}
                     detail={
-                      holdingTotalError ? '尚未完成对账' : '已与 AUM 对账'
+                      holdingTotalError ? t('尚未完成对账') : t('已与 AUM 对账')
                     }
                     accent={!holdingTotalError}
                   />
                   <Metric
-                    label="当前交易方向"
-                    value={isRedemption ? '净赎回' : '净申购'}
-                    detail="交易方向在配置测算界面修改"
+                    label={t('当前交易方向')}
+                    value={t(isRedemption ? '净赎回' : '净申购')}
+                    detail={t('交易方向在配置测算界面修改')}
                   />
                   <Metric
-                    label={isRedemption ? '净赎回金额' : '新增资金'}
-                    value={`${number(portfolio.transactionAmount)} ${amountUnit}`}
-                    detail="用于预览交易后的机构集中度"
+                    label={t(isRedemption ? '净赎回金额' : '新增资金')}
+                    value={`${number(portfolio.transactionAmount)} ${t(amountUnit)}`}
+                    detail={t('用于预览交易后的机构集中度')}
                   />
                 </div>
               </section>
 
               <section className={card}>
-                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 px-5 py-4">
                   <div>
-                    <p className="eyebrow">01 · 当前持仓</p>
-                    <h2 className="mt-1 text-lg font-semibold">当前持仓明细</h2>
-                    <p className="mt-1 text-sm text-slate-500">
-                      机构敞口从这里自动汇总；净赎回时按每项持仓同比例测算。
+                    <p className="eyebrow">{t('01 · 当前持仓')}</p>
+                    <h2 className="mt-1 text-lg font-semibold">
+                      {t('当前持仓明细')}
+                    </h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {t(
+                        '机构敞口从这里自动汇总；净赎回时按每项持仓同比例测算。',
+                      )}
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge
                       variant={holdingErrors.length ? 'destructive' : 'outline'}
                     >
-                      {holdingErrors.length
-                        ? `持仓数据需修正（${holdingErrors.length}）`
-                        : `已录入 ${number(holdingTotal)} / AUM ${number(portfolio.aum)} ${amountUnit}`}
+                      {t(
+                        holdingErrors.length
+                          ? `持仓数据需修正（${holdingErrors.length}）`
+                          : `已录入 ${number(holdingTotal)} / AUM ${number(portfolio.aum)} ${amountUnit}`,
+                      )}
                     </Badge>
                     <Button
                       type="button"
@@ -1453,27 +1561,29 @@ export default function Home() {
                       size="sm"
                       onClick={addHolding}
                     >
-                      <Plus /> 新增持仓
+                      <Plus />
+                      {t('新增持仓')}
                     </Button>
                   </div>
                 </div>
 
                 {holdingTotalError ? (
-                  <div className="border-b border-slate-100 px-5 py-4">
+                  <div className="border-b border-border/60 px-5 py-4">
                     <Alert variant="destructive">
                       <AlertTriangle />
                       <div>
-                        <AlertTitle>{holdingTotalError}</AlertTitle>
+                        <AlertTitle>{t(holdingTotalError)}</AlertTitle>
                         {canFillHoldingShortfall ? (
                           <Button
                             type="button"
                             variant="outline"
                             size="sm"
-                            className="mt-3 border-red-300 bg-white text-red-800 hover:bg-red-50"
+                            className="mt-3 border-red-300 bg-card text-red-800 hover:bg-red-50 dark:hover:bg-red-950/45"
                             onClick={fillHoldingShortfall}
                           >
-                            用现金及其他补足（需确认不计入集中度）{' '}
-                            {number(holdingBalanceDifference, 8)} {amountUnit}
+                            {t('用现金及其他补足（需确认不计入集中度）')}{' '}
+                            {number(holdingBalanceDifference, 8)}{' '}
+                            {t(amountUnit)}
                           </Button>
                         ) : null}
                       </div>
@@ -1483,29 +1593,33 @@ export default function Home() {
 
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
+                    <TableRow className="bg-muted/50 hover:bg-muted/50">
                       <TableHead className="min-w-52 pl-5">
-                        资产 / 产品
+                        {t('资产 / 产品')}
                       </TableHead>
-                      <TableHead className="min-w-52">集中度归属机构</TableHead>
+                      <TableHead className="min-w-52">
+                        {t('集中度归属机构')}
+                      </TableHead>
                       <TableHead className="min-w-32 text-right">
-                        当前金额
-                        <span className="block text-[11px] font-normal text-slate-400">
-                          绝对金额/{amountUnit}
+                        {t('当前金额')}
+                        <span className="block text-[11px] font-normal text-muted-foreground/75">
+                          {t('绝对金额/')}
+                          {t(amountUnit)}
                         </span>
                       </TableHead>
                       {isRedemption ? (
                         <>
                           <TableHead className="min-w-32 text-right">
-                            预计赎回
-                            <span className="block text-[11px] font-normal text-slate-400">
-                              当前为同比例
+                            {t('预计赎回')}
+                            <span className="block text-[11px] font-normal text-muted-foreground/75">
+                              {t('当前为同比例')}
                             </span>
                           </TableHead>
                           <TableHead className="min-w-32 text-right">
-                            赎回后金额
-                            <span className="block text-[11px] font-normal text-slate-400">
-                              绝对金额/{amountUnit}
+                            {t('赎回后金额')}
+                            <span className="block text-[11px] font-normal text-muted-foreground/75">
+                              {t('绝对金额/')}
+                              {t(amountUnit)}
                             </span>
                           </TableHead>
                         </>
@@ -1533,13 +1647,13 @@ export default function Home() {
                           >
                             <div className="grid gap-1">
                               <Input
-                                aria-label="持仓资产或产品名称"
+                                aria-label={t('持仓资产或产品名称')}
                                 value={holding.name}
                                 aria-invalid={nameInvalid || undefined}
                                 className={
                                   nameInvalid
                                     ? 'border-red-300 bg-red-50 text-red-950'
-                                    : 'bg-white'
+                                    : 'bg-card'
                                 }
                                 onChange={(event) =>
                                   updateHolding(holding.id, {
@@ -1552,7 +1666,7 @@ export default function Home() {
                                   role="alert"
                                   className="text-xs font-medium text-red-700"
                                 >
-                                  请输入资产或产品名称。
+                                  {t('请输入资产或产品名称。')}
                                 </span>
                               ) : null}
                             </div>
@@ -1562,7 +1676,9 @@ export default function Home() {
                           >
                             <div className="grid gap-1">
                               <NativeSelect
-                                aria-label={`${holding.name || '某项持仓'}的集中度归属机构`}
+                                aria-label={t(
+                                  `${holding.name || '某项持仓'}的集中度归属机构`,
+                                )}
                                 disabled={holding.isBalancing}
                                 value={
                                   holding.bankId === null
@@ -1573,7 +1689,7 @@ export default function Home() {
                                 className={
                                   bankInvalid
                                     ? 'border-red-300 bg-red-50 text-red-950'
-                                    : 'bg-white'
+                                    : 'bg-card'
                                 }
                                 onChange={(event) =>
                                   updateHolding(holding.id, {
@@ -1586,12 +1702,12 @@ export default function Home() {
                                 }
                               >
                                 <NativeSelectOption value={UNASSIGNED_BANK_ID}>
-                                  请选择归属机构
+                                  {t('请选择归属机构')}
                                 </NativeSelectOption>
                                 <NativeSelectOption
                                   value={EXCLUDED_BANK_SELECT_VALUE}
                                 >
-                                  无机构归属 / 不计入本工具统计（需确认）
+                                  {t('无机构归属 / 不计入本工具统计（需确认）')}
                                 </NativeSelectOption>
                                 {banks.map((bank) => (
                                   <NativeSelectOption
@@ -1604,14 +1720,16 @@ export default function Home() {
                               </NativeSelect>
                               {holding.isBalancing ? (
                                 <span className="text-xs font-medium text-amber-700">
-                                  自动补差专用行；明确不计入本工具的机构集中度统计。
+                                  {t(
+                                    '自动补差专用行；明确不计入本工具的机构集中度统计。',
+                                  )}
                                 </span>
                               ) : bankInvalid ? (
                                 <span
                                   role="alert"
                                   className="text-xs font-medium text-red-700"
                                 >
-                                  请选择机构，或明确选择不计入统计。
+                                  {t('请选择机构，或明确选择不计入统计。')}
                                 </span>
                               ) : null}
                             </div>
@@ -1621,7 +1739,9 @@ export default function Home() {
                           >
                             <div className="grid gap-1">
                               <EditableNumberInput
-                                aria-label={`${holding.name || '某项持仓'}当前金额，单位${amountUnit}`}
+                                aria-label={t(
+                                  `${holding.name || '某项持仓'}当前金额，单位${amountUnit}`,
+                                )}
                                 value={holding.amount}
                                 min={0}
                                 step="0.01"
@@ -1629,7 +1749,7 @@ export default function Home() {
                                 className={`text-right ${
                                   amountInvalid
                                     ? 'border-red-300 bg-red-50 text-red-950'
-                                    : 'bg-white'
+                                    : 'bg-card'
                                 }`}
                                 onValueChange={(value) =>
                                   updateHolding(holding.id, {
@@ -1642,25 +1762,27 @@ export default function Home() {
                                   role="alert"
                                   className="text-right text-xs font-medium text-red-700"
                                 >
-                                  请输入非负金额。
+                                  {t('请输入非负金额。')}
                                 </span>
                               ) : null}
                             </div>
                           </TableCell>
                           {isRedemption ? (
                             <>
-                              <TableCell className="text-right font-semibold text-teal-700">
-                                {number(redeemed)} {amountUnit}
+                              <TableCell className="text-right font-semibold text-primary">
+                                {number(redeemed)} {t(amountUnit)}
                               </TableCell>
-                              <TableCell className="text-right font-medium text-slate-700">
-                                {number(finalAmount)} {amountUnit}
+                              <TableCell className="text-right font-medium text-foreground/85">
+                                {number(finalAmount)} {t(amountUnit)}
                               </TableCell>
                             </>
                           ) : null}
                           <TableCell>
                             <Button
                               type="button"
-                              aria-label={`删除${holding.name || '该项持仓'}`}
+                              aria-label={t(
+                                `删除${holding.name || '该项持仓'}`,
+                              )}
                               variant="ghost"
                               size="icon-sm"
                               onClick={() => {
@@ -1681,19 +1803,22 @@ export default function Home() {
                       <TableRow>
                         <TableCell
                           colSpan={isRedemption ? 6 : 4}
-                          className="h-24 text-center text-sm text-slate-500"
+                          className="h-24 text-center text-sm text-muted-foreground"
                         >
-                          还没有持仓。请新增持仓，并使金额合计与当前 AUM 一致。
+                          {t(
+                            '还没有持仓。请新增持仓，并使金额合计与当前 AUM 一致。',
+                          )}
                         </TableCell>
                       </TableRow>
                     ) : null}
                   </TableBody>
                 </Table>
-                <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
-                  持仓金额合计必须等于当前 AUM。选择“无机构归属 /
-                  不计入本工具统计”仅表示该行不占用下方单一机构额度，须由合规确认；普通机构持仓不得归入此项。窄屏可左右滑动查看完整字段。
+                <p className="border-t border-border/60 px-5 py-3 text-xs leading-5 text-muted-foreground">
+                  {t(
+                    '持仓金额合计必须等于当前 AUM。选择“无机构归属 / 不计入本工具统计”仅表示该行不占用下方单一机构额度，须由合规确认；普通机构持仓不得归入此项。窄屏可左右滑动查看完整字段。',
+                  )}
                   {isRedemption
-                    ? ' 当前显示的是同比例情景，不代表赎回优先级。'
+                    ? t(' 当前显示的是同比例情景，不代表赎回优先级。')
                     : ''}
                 </p>
               </section>
@@ -1701,32 +1826,36 @@ export default function Home() {
               <section className={card}>
                 <div className="section-head">
                   <div>
-                    <p className="eyebrow">02 · 机构集中度</p>
+                    <p className="eyebrow">{t('02 · 机构集中度')}</p>
                     <h2 className="mt-1 text-lg font-semibold">
-                      机构集中度汇总
+                      {t('机构集中度汇总')}
                     </h2>
                   </div>
                   <Badge variant="outline">
-                    机构表 {banks.length} 家 · 备选库 {bankLibrary.length} 家
+                    {t('机构表')}
+                    {banks.length}
+                    {t('家 · 备选库')}
+                    {bankLibrary.length}
+                    {t('家')}
                   </Badge>
                 </div>
 
-                <div className="grid gap-4 border-b border-slate-100 bg-slate-50/70 p-5 lg:grid-cols-2">
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="grid gap-4 border-b border-border/60 bg-muted/40 p-5 lg:grid-cols-2">
+                  <div className="rounded-xl border border-border bg-card p-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-slate-800">
-                          合作机构备选库
+                        <p className="text-sm font-semibold text-foreground">
+                          {t('合作机构备选库')}
                         </p>
-                        <p className="mt-0.5 text-xs text-slate-500">
-                          选择后可用于持仓归属和今日报价
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {t('选择后可用于持仓归属和今日报价')}
                         </p>
                       </div>
-                      <Badge variant="secondary">仅保存在本机</Badge>
+                      <Badge variant="secondary">{t('仅保存在本机')}</Badge>
                     </div>
                     <div className="mt-3 flex gap-2">
                       <NativeSelect
-                        aria-label="从合作机构备选库选择"
+                        aria-label={t('从合作机构备选库选择')}
                         value={
                           availableBankTemplates.some(
                             (bank) => bank.id === selectedBankTemplateId,
@@ -1740,13 +1869,17 @@ export default function Home() {
                         className="min-w-0 flex-1"
                       >
                         <NativeSelectOption value="">
-                          {availableBankTemplates.length
-                            ? '选择备选机构'
-                            : '备选机构已全部加入'}
+                          {t(
+                            availableBankTemplates.length
+                              ? '选择备选机构'
+                              : '备选机构已全部加入',
+                          )}
                         </NativeSelectOption>
                         {availableBankTemplates.map((bank) => (
                           <NativeSelectOption value={bank.id} key={bank.id}>
-                            {bank.name} · 默认 {number(bank.defaultLimitPct)}%
+                            {bank.name}
+                            {t('· 默认')}
+                            {number(bank.defaultLimitPct)}%
                           </NativeSelectOption>
                         ))}
                       </NativeSelect>
@@ -1760,23 +1893,26 @@ export default function Home() {
                         }
                         onClick={addBankFromLibrary}
                       >
-                        <Plus /> 加入机构表
+                        <Plus />
+                        {t('加入机构表')}
                       </Button>
                     </div>
                   </div>
 
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-sm font-semibold text-slate-800">
-                      新增合作机构
+                  <div className="rounded-xl border border-border bg-card p-4">
+                    <p className="text-sm font-semibold text-foreground">
+                      {t('新增合作机构')}
                     </p>
                     <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_110px_auto]">
                       <label htmlFor="new-bank-name" className="grid gap-1">
-                        <span className="text-xs text-slate-500">机构名称</span>
+                        <span className="text-xs text-muted-foreground">
+                          {t('机构名称')}
+                        </span>
                         <Input
                           id="new-bank-name"
-                          aria-label="新增合作机构名称"
+                          aria-label={t('新增合作机构名称')}
                           value={newBankName}
-                          placeholder="例如：机构 F"
+                          placeholder={t('例如：机构 F')}
                           onChange={(event) =>
                             setNewBankName(event.target.value)
                           }
@@ -1795,12 +1931,12 @@ export default function Home() {
                               : 'border-transparent'
                         }`}
                       >
-                        <span className="text-xs text-slate-500">
-                          默认上限（%）
+                        <span className="text-xs text-muted-foreground">
+                          {t('默认上限（%）')}
                         </span>
                         <EditableNumberInput
                           id="new-bank-limit"
-                          aria-label="新增合作机构默认集中度上限百分比"
+                          aria-label={t('新增合作机构默认集中度上限百分比')}
                           value={newBankLimitPct}
                           min={0}
                           max={SFC_MAX_BANK_CONCENTRATION_PCT}
@@ -1813,7 +1949,7 @@ export default function Home() {
                             newBankLimitError
                               ? 'border-red-300 bg-red-50 text-red-950'
                               : newBankLimitNotice
-                                ? 'border-yellow-300 bg-yellow-50 text-slate-950'
+                                ? 'border-yellow-300 bg-yellow-50 text-foreground'
                                 : ''
                           }`}
                         />
@@ -1822,11 +1958,11 @@ export default function Home() {
                             role="alert"
                             className="text-xs font-medium leading-4 text-red-600"
                           >
-                            {newBankLimitError}
+                            {t(newBankLimitError)}
                           </span>
                         ) : newBankLimitNotice ? (
                           <span className="text-xs font-medium leading-4 text-yellow-800">
-                            {newBankLimitNotice}
+                            {t(newBankLimitNotice)}
                           </span>
                         ) : null}
                       </label>
@@ -1842,7 +1978,7 @@ export default function Home() {
                           }
                           onClick={saveBankToLibrary}
                         >
-                          存入备选库
+                          {t('存入备选库')}
                         </Button>
                       </div>
                     </div>
@@ -1850,46 +1986,49 @@ export default function Home() {
                 </div>
 
                 {bankExposureTotalError ? (
-                  <div className="border-b border-slate-100 px-5 py-4">
+                  <div className="border-b border-border/60 px-5 py-4">
                     <Alert variant="destructive">
                       <AlertTriangle />
-                      <AlertTitle>{bankExposureTotalError}</AlertTitle>
+                      <AlertTitle>{t(bankExposureTotalError)}</AlertTitle>
                     </Alert>
                   </div>
                 ) : null}
 
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
-                      <TableHead className="pl-5">机构</TableHead>
+                    <TableRow className="bg-muted/50 hover:bg-muted/50">
+                      <TableHead className="pl-5">{t('机构')}</TableHead>
                       <TableHead className="text-right">
-                        当前机构敞口
-                        <span className="block text-[11px] font-normal text-slate-400">
-                          从持仓自动汇总/{amountUnit}
+                        {t('当前机构敞口')}
+                        <span className="block text-[11px] font-normal text-muted-foreground/75">
+                          {t('从持仓自动汇总/')}
+                          {t(amountUnit)}
                         </span>
                       </TableHead>
                       <TableHead className="text-right">
-                        {isRedemption ? '赎回后占比（不变）' : '当前占比'}
-                        <span className="block text-[11px] font-normal text-slate-400">
-                          {isRedemption ? '与当前占比相同' : '占当前 AUM'}
+                        {t(isRedemption ? '赎回后占比（不变）' : '当前占比')}
+                        <span className="block text-[11px] font-normal text-muted-foreground/75">
+                          {t(isRedemption ? '与当前占比相同' : '占当前 AUM')}
                         </span>
                       </TableHead>
                       <TableHead className="text-right">
-                        适用集中度上限
-                        <span className="block text-[11px] font-normal text-slate-400">
-                          合规确认 · 占交易后 NAV/%
+                        {t('适用集中度上限')}
+                        <span className="block text-[11px] font-normal text-muted-foreground/75">
+                          {t('合规确认 · 占交易后 NAV/%')}
                         </span>
                       </TableHead>
                       <TableHead className="text-right">
-                        {isRedemption ? '赎回后持仓' : '交易后额度上限'}
-                        <span className="block text-[11px] font-normal text-slate-400">
-                          绝对金额/{amountUnit}
+                        {t(isRedemption ? '赎回后持仓' : '交易后额度上限')}
+                        <span className="block text-[11px] font-normal text-muted-foreground/75">
+                          {t('绝对金额/')}
+                          {t(amountUnit)}
                         </span>
                       </TableHead>
                       <TableHead className="text-right">
-                        {isRedemption ? '预计同比例赎回' : '本次最多可新增'}
-                        <span className="block text-[11px] font-normal text-slate-400">
-                          绝对金额/{amountUnit}
+                        {t(isRedemption ? '预计同比例赎回' : '本次最多可新增')}
+                        <span className="block text-[11px] font-normal text-muted-foreground/75">
+                          {t('绝对金额/')}
+                          {t(amountUnit)}
                         </span>
                       </TableHead>
                       <TableHead className="w-12" />
@@ -1927,8 +2066,8 @@ export default function Home() {
                       ).length;
                       const hasHoldings = linkedHoldingCount > 0;
                       const referenceSummary = [
-                        hasHoldings ? linkedHoldingCount + ' 项持仓' : null,
-                        hasQuotes ? linkedQuoteCount + ' 项报价' : null,
+                        hasHoldings ? `${linkedHoldingCount} 项持仓` : null,
+                        hasQuotes ? `${linkedQuoteCount} 项报价` : null,
                       ]
                         .filter(Boolean)
                         .join('和');
@@ -1947,48 +2086,58 @@ export default function Home() {
                       return (
                         <TableRow key={bank.id}>
                           <TableCell className="min-w-32 pl-5">
-                            <p className="font-medium text-slate-800">
+                            <p className="font-medium text-foreground">
                               {bank.name}
                             </p>
-                            <p className="mt-0.5 text-xs text-slate-400">
-                              {linkedHoldingCount} 项持仓 · {linkedQuoteCount}{' '}
-                              项报价
+                            <p className="mt-0.5 text-xs text-muted-foreground/75">
+                              {linkedHoldingCount}
+                              {t('项持仓 ·')}
+                              {linkedQuoteCount} {t('项报价')}
                             </p>
                           </TableCell>
                           <TableCell
                             className={`min-w-28 align-top ${exposureHighlight ? 'bg-red-50/90' : ''}`}
                           >
                             <div className="grid gap-1">
-                              <p className="text-right font-semibold tabular-nums text-slate-800">
-                                {number(bank.currentExposure)} {amountUnit}
+                              <p className="text-right font-semibold tabular-nums text-foreground">
+                                {number(bank.currentExposure)} {t(amountUnit)}
                               </p>
-                              <p className="text-right text-[11px] text-slate-400">
-                                由 {linkedHoldingCount} 项持仓自动汇总
+                              <p className="text-right text-[11px] text-muted-foreground/75">
+                                {t('由')}
+                                {linkedHoldingCount}
+                                {t('项持仓自动汇总')}
                               </p>
                               {exposureInvalid ? (
                                 <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
-                                  请先修正对应持仓金额。
+                                  {t('请先修正对应持仓金额。')}
                                 </span>
                               ) : postTradeExposureBreach ? (
                                 <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
                                   {isRedemption ? (
-                                    <>同比例赎回后占比不变，仍超过适用上限。</>
+                                    <>
+                                      {t(
+                                        '同比例赎回后占比不变，仍超过适用上限。',
+                                      )}
+                                    </>
                                   ) : (
                                     <>
-                                      计入新增资金后仍超过适用上限{' '}
-                                      {number(finalCap)} {amountUnit}。
+                                      {t('计入新增资金后仍超过适用上限')}{' '}
+                                      {number(finalCap)} {t(amountUnit)}
+                                      {t('。')}
                                     </>
                                   )}
                                 </span>
                               ) : currentExposureBreach ? (
                                 <span className="block max-w-44 whitespace-normal text-xs font-medium leading-4 text-red-700">
-                                  当前占比超限；计入新增资金后可稀释至上限内。
+                                  {t(
+                                    '当前占比超限；计入新增资金后可稀释至上限内。',
+                                  )}
                                 </span>
                               ) : null}
                             </div>
                           </TableCell>
                           <TableCell
-                            className={`text-right text-slate-600 ${
+                            className={`text-right text-foreground/75 ${
                               exposureHighlight
                                 ? 'bg-red-50/90 font-medium text-red-800'
                                 : ''
@@ -2011,7 +2160,9 @@ export default function Home() {
                           >
                             <div className="grid gap-1">
                               <EditableNumberInput
-                                aria-label={`${bank.name}经合规确认的适用集中度上限`}
+                                aria-label={t(
+                                  `${bank.name}经合规确认的适用集中度上限`,
+                                )}
                                 min={0}
                                 max={SFC_MAX_BANK_CONCENTRATION_PCT}
                                 step="0.01"
@@ -2028,7 +2179,7 @@ export default function Home() {
                                   concentrationError
                                     ? 'border-red-300 bg-red-50 text-red-950'
                                     : concentrationNotice
-                                      ? 'border-yellow-300 bg-yellow-50 text-slate-950'
+                                      ? 'border-yellow-300 bg-yellow-50 text-foreground'
                                       : ''
                                 }`}
                               />
@@ -2037,32 +2188,32 @@ export default function Home() {
                                   role="alert"
                                   className="block max-w-52 whitespace-normal text-xs font-medium leading-4 text-red-600"
                                 >
-                                  {concentrationError}
+                                  {t(concentrationError)}
                                 </span>
                               ) : concentrationNotice ? (
                                 <span className="block max-w-52 whitespace-normal text-xs font-medium leading-4 text-yellow-800">
-                                  {concentrationNotice}
+                                  {t(concentrationNotice)}
                                 </span>
                               ) : null}
                             </div>
                           </TableCell>
-                          <TableCell className="text-right font-medium text-slate-700">
+                          <TableCell className="text-right font-medium text-foreground/85">
                             {number(
                               isRedemption ? postTradeExposure : finalCap,
                             )}
                           </TableCell>
-                          <TableCell className="text-right font-semibold text-teal-700">
+                          <TableCell className="text-right font-semibold text-primary">
                             {number(isRedemption ? redeemed : remaining)}
                           </TableCell>
                           <TableCell>
                             <Button
-                              aria-label={`将${bank.name}移出机构表`}
+                              aria-label={t(`将${bank.name}移出机构表`)}
                               title={
                                 hasHoldings || hasQuotes
-                                  ? '该机构仍被' +
-                                    referenceSummary +
-                                    '使用；请先改绑或删除关联记录'
-                                  : '移出机构表，但保留在合作机构备选库'
+                                  ? t(
+                                      `该机构仍被${referenceSummary}使用；请先改绑或删除关联记录`,
+                                    )
+                                  : t('移出机构表，但保留在合作机构备选库')
                               }
                               variant="ghost"
                               size="icon-sm"
@@ -2085,28 +2236,29 @@ export default function Home() {
                       <TableRow>
                         <TableCell
                           colSpan={7}
-                          className="h-20 text-center text-sm text-slate-500"
+                          className="h-20 text-center text-sm text-muted-foreground"
                         >
-                          请先从合作机构备选库加入需要用于持仓或报价的机构。
+                          {t(
+                            '请先从合作机构备选库加入需要用于持仓或报价的机构。',
+                          )}
                         </TableCell>
                       </TableRow>
                     ) : null}
                   </TableBody>
                 </Table>
-                <div className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
+                <div className="border-t border-border/60 px-5 py-3 text-xs leading-5 text-muted-foreground">
                   <p>
                     {isRedemption ? (
                       <>
-                        赎回后持仓 = 当前持仓 ×（交易后 AUM ÷ 当前
-                        AUM）；同比例赎回金额 = 当前持仓 −
-                        赎回后持仓。机构占比不会因同比例赎回改变。
+                        {t(
+                          '赎回后持仓 = 当前持仓 ×（交易后 AUM ÷ 当前 AUM）；同比例赎回金额 = 当前持仓 − 赎回后持仓。机构占比不会因同比例赎回改变。',
+                        )}
                       </>
                     ) : (
                       <>
-                        当前占比 = 当前机构敞口 ÷ 当前 AUM；交易后额度上限
-                        =（当前 AUM + 新增待配置资金）×
-                        集中度上限；本次最多可新增 = 交易后额度上限 −
-                        当前机构敞口。
+                        {t(
+                          '当前占比 = 当前机构敞口 ÷ 当前 AUM；交易后额度上限 =（当前 AUM + 新增待配置资金）× 集中度上限；本次最多可新增 = 交易后额度上限 − 当前机构敞口。',
+                        )}
                       </>
                     )}
                   </p>
@@ -2119,9 +2271,11 @@ export default function Home() {
                   ) ? (
                     <div className="mt-1">
                       <p>
-                        被持仓或报价引用的机构不能直接移除；持仓请先在上方改绑，关联报价请返回配置测算界面删除。
+                        {t(
+                          '被持仓或报价引用的机构不能直接移除；持仓请先在上方改绑，关联报价请返回配置测算界面删除。',
+                        )}
                         {isRedemption
-                          ? ' 当前为净赎回模式，需先切换至净申购后查看报价。'
+                          ? t(' 当前为净赎回模式，需先切换至净申购后查看报价。')
                           : ''}
                       </p>
                       {quotes.length ? (
@@ -2129,19 +2283,19 @@ export default function Home() {
                           type="button"
                           variant="outline"
                           size="sm"
-                          className="mt-2 bg-white"
+                          className="mt-2 bg-card"
                           onClick={() => setWorkspaceView('planner')}
                         >
-                          返回配置测算查看报价 <ArrowRight />
+                          {t('返回配置测算查看报价')}
+                          <ArrowRight />
                         </Button>
                       ) : null}
                     </div>
                   ) : null}
                   <p className="mt-1">
-                    同一机构的全部产品合并占用额度。单一实体一般上限为
-                    10%；仅当该实体为符合条件的实质金融机构，并经合规确认满足
-                    8.2(g)(i) 条件时才可提高至 25%。本工具假设 AUM
-                    等于集中度计算使用的 NAV。
+                    {t(
+                      '同一机构的全部产品合并占用额度。单一实体一般上限为 10%；仅当该实体为符合条件的实质金融机构，并经合规确认满足 8.2(g)(i) 条件时才可提高至 25%。本工具假设 AUM 等于集中度计算使用的 NAV。',
+                    )}
                   </p>
                 </div>
               </section>
@@ -2154,17 +2308,19 @@ export default function Home() {
                 <div className="section-head">
                   <div>
                     <p className="eyebrow">
-                      02 · {isRedemption ? '赎回规则' : '市场报价'}
+                      02 · {t(isRedemption ? '赎回规则' : '市场报价')}
                     </p>
                     <h2 className="mt-1 text-lg font-semibold">
-                      {isRedemption
-                        ? '按现有组合同比例赎回'
-                        : '今日可投产品与报价'}
+                      {t(
+                        isRedemption
+                          ? '按现有组合同比例赎回'
+                          : '今日可投产品与报价',
+                      )}
                     </h2>
                   </div>
                   {isRedemption ? (
-                    <Badge className="bg-teal-50 text-teal-800">
-                      不使用今日报价
+                    <Badge className="bg-accent text-primary">
+                      {t('不使用今日报价')}
                     </Badge>
                   ) : (
                     <Button
@@ -2176,7 +2332,7 @@ export default function Home() {
                           ...old,
                           {
                             id: id('quote'),
-                            name: '新产品',
+                            name: t('新产品'),
                             bankId: banks[0].id,
                             wamDays: null,
                             walDays: 30,
@@ -2188,23 +2344,26 @@ export default function Home() {
                         clearTargetOutcome();
                       }}
                     >
-                      <Plus /> 添加报价
+                      <Plus />
+                      {t('添加报价')}
                     </Button>
                   )}
                 </div>
                 {isRedemption ? (
                   <div className="p-5">
-                    <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-4">
-                      <p className="text-sm font-semibold text-slate-900">
-                        当前版本不选择具体赎回产品
+                    <div className="rounded-xl border border-primary/35 bg-accent/60 p-4">
+                      <p className="text-sm font-semibold text-foreground">
+                        {t('当前版本不选择具体赎回产品')}
                       </p>
-                      <p className="mt-1 text-sm leading-6 text-slate-600">
-                        系统按“净赎回金额 ÷ 当前
-                        AUM”的比例，同步缩减现有组合中的所有资产和机构敞口。因此
-                        YTM、WAM、WAL 与机构占比保持不变。
+                      <p className="mt-1 text-sm leading-6 text-foreground/75">
+                        {t(
+                          '系统按“净赎回金额 ÷ 当前 AUM”的比例，同步缩减现有组合中的所有资产和机构敞口。因此 YTM、WAM、WAL 与机构占比保持不变。',
+                        )}
                       </p>
-                      <p className="mt-2 text-xs leading-5 text-slate-500">
-                        “当前持仓”界面会逐项列出预计赎回额和剩余金额；当前仍不判断赎回优先级。后续可在这张底表上增加产品级收益、期限和可赎回额度，再优化具体来源。
+                      <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                        {t(
+                          '“当前持仓”界面会逐项列出预计赎回额和剩余金额；当前仍不判断赎回优先级。后续可在这张底表上增加产品级收益、期限和可赎回额度，再优化具体来源。',
+                        )}
                       </p>
                     </div>
                   </div>
@@ -2212,16 +2371,23 @@ export default function Home() {
                   <>
                     <Table>
                       <TableHeader>
-                        <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
-                          <TableHead className="pl-5">产品</TableHead>
-                          <TableHead>机构</TableHead>
-                          <TableHead className="text-right">WAM/天</TableHead>
-                          <TableHead className="text-right">WAL/天</TableHead>
-                          <TableHead className="text-right">利率/%</TableHead>
+                        <TableRow className="bg-muted/50 hover:bg-muted/50">
+                          <TableHead className="pl-5">{t('产品')}</TableHead>
+                          <TableHead>{t('机构')}</TableHead>
                           <TableHead className="text-right">
-                            本次可投上限
-                            <span className="block text-[11px] font-normal text-slate-400">
-                              绝对金额/{amountUnit}
+                            {t('WAM/天')}
+                          </TableHead>
+                          <TableHead className="text-right">
+                            {t('WAL/天')}
+                          </TableHead>
+                          <TableHead className="text-right">
+                            {t('利率/%')}
+                          </TableHead>
+                          <TableHead className="text-right">
+                            {t('本次可投上限')}
+                            <span className="block text-[11px] font-normal text-muted-foreground/75">
+                              {t('绝对金额/')}
+                              {t(amountUnit)}
                             </span>
                           </TableHead>
                           <TableHead className="w-12" />
@@ -2232,7 +2398,7 @@ export default function Home() {
                           <TableRow key={quote.id}>
                             <TableCell className="min-w-48 pl-5">
                               <Input
-                                aria-label="产品名称"
+                                aria-label={t('产品名称')}
                                 value={quote.name}
                                 onChange={(event) =>
                                   updateQuote(quote.id, {
@@ -2243,7 +2409,7 @@ export default function Home() {
                             </TableCell>
                             <TableCell className="min-w-32">
                               <NativeSelect
-                                aria-label={`${quote.name}机构`}
+                                aria-label={t(`${quote.name}机构`)}
                                 value={quote.bankId}
                                 onChange={(event) =>
                                   updateQuote(quote.id, {
@@ -2264,9 +2430,9 @@ export default function Home() {
                             </TableCell>
                             <TableCell className="min-w-24">
                               <EditableNumberInput
-                                aria-label={`${quote.name}计入WAM的天数`}
+                                aria-label={t(`${quote.name}计入WAM的天数`)}
                                 value={quote.wamDays}
-                                placeholder="同 WAL"
+                                placeholder={t('同 WAL')}
                                 min={0}
                                 step={1}
                                 onValueChange={(value) =>
@@ -2284,7 +2450,7 @@ export default function Home() {
                             </TableCell>
                             <TableCell className="min-w-24">
                               <EditableNumberInput
-                                aria-label={`${quote.name}计入WAL的天数`}
+                                aria-label={t(`${quote.name}计入WAL的天数`)}
                                 value={quote.walDays}
                                 min={0}
                                 step={1}
@@ -2310,7 +2476,7 @@ export default function Home() {
                             ).map(([key, value, inputLabel]) => (
                               <TableCell className="min-w-24" key={key}>
                                 <EditableNumberInput
-                                  aria-label={`${quote.name}${inputLabel}`}
+                                  aria-label={t(`${quote.name}${inputLabel}`)}
                                   value={value}
                                   min={key === 'cap' ? 0 : undefined}
                                   step="0.01"
@@ -2328,7 +2494,7 @@ export default function Home() {
                             ))}
                             <TableCell>
                               <Button
-                                aria-label={`删除${quote.name}`}
+                                aria-label={t(`删除${quote.name}`)}
                                 variant="ghost"
                                 size="icon-sm"
                                 onClick={() => {
@@ -2346,10 +2512,10 @@ export default function Home() {
                         ))}
                       </TableBody>
                     </Table>
-                    <p className="border-t border-slate-100 px-5 py-3 text-xs leading-5 text-slate-500">
-                      WAL 填剩余最终到期天数。WAM 留空时自动按 WAL
-                      处理；仅在已确认浮息工具可按下一次利率重定价计量时，填写更短的
-                      WAM 天数。报价额度与 AUM 使用同一绝对金额单位。
+                    <p className="border-t border-border/60 px-5 py-3 text-xs leading-5 text-muted-foreground">
+                      {t(
+                        'WAL 填剩余最终到期天数。WAM 留空时自动按 WAL 处理；仅在已确认浮息工具可按下一次利率重定价计量时，填写更短的 WAM 天数。报价额度与 AUM 使用同一绝对金额单位。',
+                      )}
                     </p>
                   </>
                 )}
@@ -2360,19 +2526,22 @@ export default function Home() {
                   <AlertTriangle />
                   <div>
                     <AlertTitle>
-                      {hasHoldingsWorkspaceViolation
-                        ? '当前持仓或机构集中度数据需修正，完成后才能继续计算。'
-                        : '存在超出监管硬上限或无效输入，请先修正上方提示。'}
+                      {t(
+                        hasHoldingsWorkspaceViolation
+                          ? '当前持仓或机构集中度数据需修正，完成后才能继续计算。'
+                          : '存在超出监管硬上限或无效输入，请先修正上方提示。',
+                      )}
                     </AlertTitle>
                     {hasHoldingsWorkspaceViolation ? (
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="mt-3 border-red-300 bg-white text-red-800 hover:bg-red-50"
+                        className="mt-3 border-red-300 bg-card text-red-800 hover:bg-red-50 dark:hover:bg-red-950/45"
                         onClick={() => setWorkspaceView('holdings')}
                       >
-                        前往当前持仓处理 <ArrowRight />
+                        {t('前往当前持仓处理')}
+                        <ArrowRight />
                       </Button>
                     ) : null}
                   </div>
@@ -2382,11 +2551,13 @@ export default function Home() {
               <div
                 className={`${card} flex flex-wrap items-center justify-between gap-3 p-4`}
               >
-                <div className="flex items-center gap-2 text-sm text-slate-500">
-                  <ShieldCheck className="size-4 text-teal-600" />
-                  {isRedemption
-                    ? '按现有组合同比例扣减；不使用市场报价'
-                    : '连续金额优化；未配置资金按零期限、零收益现金处理'}
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <ShieldCheck className="size-4 text-primary" />
+                  {t(
+                    isRedemption
+                      ? '按现有组合同比例扣减；不使用市场报价'
+                      : '连续金额优化；未配置资金按零期限、零收益现金处理',
+                  )}
                 </div>
                 <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
                   <Button
@@ -2395,15 +2566,16 @@ export default function Home() {
                     onClick={reset}
                     className="w-full sm:w-auto"
                   >
-                    <RefreshCcw /> 恢复示例
+                    <RefreshCcw />
+                    {t('恢复示例')}
                   </Button>
                   <Button
                     size="lg"
                     onClick={calculate}
                     disabled={hasRegulatoryLimitViolation}
-                    className="w-full bg-teal-600 px-5 text-white hover:bg-teal-700 sm:w-auto"
+                    className="w-full bg-primary px-5 text-primary-foreground hover:bg-primary/90 sm:w-auto"
                   >
-                    {isRedemption ? '测算赎回后组合' : '计算最优配置'}{' '}
+                    {t(isRedemption ? '测算赎回后组合' : '计算最优配置')}{' '}
                     <ArrowRight />
                   </Button>
                 </div>
@@ -2414,61 +2586,65 @@ export default function Home() {
 
         {workspaceView === 'planner' ? (
           <aside className="xl:self-start">
-            <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
-              <div className="flex items-start justify-between border-b border-slate-100 px-5 py-4">
+            <section className="overflow-hidden rounded-2xl border border-border bg-card shadow-[0_14px_40px_rgba(15,23,42,0.08)] dark:shadow-black/25">
+              <div className="flex items-start justify-between border-b border-border/60 px-5 py-4">
                 <div>
-                  <p className="eyebrow">决策面板</p>
+                  <p className="eyebrow">{t('决策面板')}</p>
                   <h2 className="mt-1 text-lg font-semibold">
-                    {isRedemption ? '赎回后组合快照' : '收益前沿与推荐配置'}
+                    {t(isRedemption ? '赎回后组合快照' : '收益前沿与推荐配置')}
                   </h2>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {isRedemption
-                      ? '按现有组合同比例缩减；结果以最近一次测算为准'
-                      : '前沿随输入实时更新；配置结果以最近一次计算为准'}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t(
+                      isRedemption
+                        ? '按现有组合同比例缩减；结果以最近一次测算为准'
+                        : '前沿随输入实时更新；配置结果以最近一次计算为准',
+                    )}
                   </p>
                 </div>
                 {hasRegulatoryLimitViolation ? (
-                  <Badge variant="destructive">监管/输入需修正</Badge>
+                  <Badge variant="destructive">{t('监管/输入需修正')}</Badge>
                 ) : dirty ? (
                   <Badge className="bg-amber-100 text-amber-800">
-                    待重新计算
+                    {t('待重新计算')}
                   </Badge>
                 ) : result.ok ? (
                   <Badge className="bg-emerald-100 text-emerald-800">
-                    <Check /> 约束通过
+                    <Check />
+                    {t('约束通过')}
                   </Badge>
                 ) : (
-                  <Badge variant="destructive">输入需调整</Badge>
+                  <Badge variant="destructive">{t('输入需调整')}</Badge>
                 )}
               </div>
 
               {isRedemption ? (
-                <div className="border-b border-slate-100 p-5">
-                  <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-4">
-                    <p className="eyebrow">赎回影响</p>
+                <div className="border-b border-border/60 p-5">
+                  <div className="rounded-xl border border-primary/35 bg-accent/60 p-4">
+                    <p className="eyebrow">{t('赎回影响')}</p>
                     <h3 className="mt-1 text-base font-semibold">
-                      同比例赎回不改变期限与收益指标
+                      {t('同比例赎回不改变期限与收益指标')}
                     </h3>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">
-                      本模式没有新的买入配置，因此不展示收益前沿或目标 YTM
-                      反推。交易后结果仅由赎回金额和当前组合快照决定。
+                    <p className="mt-2 text-sm leading-6 text-foreground/75">
+                      {t(
+                        '本模式没有新的买入配置，因此不展示收益前沿或目标 YTM 反推。交易后结果仅由赎回金额和当前组合快照决定。',
+                      )}
                     </p>
                   </div>
                 </div>
               ) : (
-                <div className="border-b border-slate-100">
+                <div className="border-b border-border/60">
                   <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
                     <div>
-                      <p className="eyebrow">收益前沿</p>
+                      <p className="eyebrow">{t('收益前沿')}</p>
                       <h3 className="mt-1 flex items-center gap-2 text-base font-semibold">
-                        <TrendingUp className="size-4 text-teal-700" />
-                        多一天期限，换来多少收益
+                        <TrendingUp className="size-4 text-primary" />
+                        {t('多一天期限，换来多少收益')}
                       </h3>
                     </div>
                     <div
-                      className="inline-flex rounded-xl bg-slate-100 p-1"
+                      className="inline-flex rounded-xl bg-muted p-1"
                       role="tablist"
-                      aria-label="选择期限指标"
+                      aria-label={t('选择期限指标')}
                     >
                       {(['wam', 'wal'] as const).map((mode) => (
                         <button
@@ -2484,11 +2660,12 @@ export default function Home() {
                           }}
                           className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
                             frontierMode === mode
-                              ? 'bg-white text-slate-950 shadow-sm'
-                              : 'text-slate-500 hover:text-slate-800'
+                              ? 'bg-card text-foreground shadow-sm'
+                              : 'text-muted-foreground hover:text-foreground'
                           }`}
                         >
-                          {mode.toUpperCase()} 曲线
+                          {mode.toUpperCase()}
+                          {t('曲线')}
                         </button>
                       ))}
                     </div>
@@ -2504,16 +2681,19 @@ export default function Home() {
                           <AlertTriangle />
                           <div>
                             <AlertTitle>
-                              请先修正“当前持仓”中的持仓或机构数据，随后再生成收益前沿。
+                              {t(
+                                '请先修正“当前持仓”中的持仓或机构数据，随后再生成收益前沿。',
+                              )}
                             </AlertTitle>
                             <Button
                               type="button"
                               variant="outline"
                               size="sm"
-                              className="mt-3 border-red-300 bg-white text-red-800 hover:bg-red-50"
+                              className="mt-3 border-red-300 bg-card text-red-800 hover:bg-red-50 dark:hover:bg-red-950/45"
                               onClick={() => setWorkspaceView('holdings')}
                             >
-                              前往当前持仓处理 <ArrowRight />
+                              {t('前往当前持仓处理')}
+                              <ArrowRight />
                             </Button>
                           </div>
                         </Alert>
@@ -2543,12 +2723,12 @@ export default function Home() {
                 </div>
               )}
 
-              <div className="border-b border-slate-100 px-5 py-4">
+              <div className="border-b border-border/60 px-5 py-4">
                 <p className="eyebrow">
-                  {isRedemption ? '测算结果' : '最优解'}
+                  {t(isRedemption ? '测算结果' : '最优解')}
                 </p>
                 <h3 className="mt-1 text-base font-semibold">
-                  {isRedemption ? '同比例赎回结果' : '推荐配置'}
+                  {t(isRedemption ? '同比例赎回结果' : '推荐配置')}
                 </h3>
               </div>
 
@@ -2557,9 +2737,11 @@ export default function Home() {
                   <Alert variant="destructive" className="p-4">
                     <AlertTriangle />
                     <AlertTitle>
-                      {isRedemption
-                        ? '赎回测算已暂时隐藏。请先修正标红字段，再重新测算。'
-                        : '推荐配置已暂时隐藏。请先修正标红字段，再重新计算。'}
+                      {t(
+                        isRedemption
+                          ? '赎回测算已暂时隐藏。请先修正标红字段，再重新测算。'
+                          : '推荐配置已暂时隐藏。请先修正标红字段，再重新计算。',
+                      )}
                     </AlertTitle>
                   </Alert>
                 </div>
@@ -2570,16 +2752,16 @@ export default function Home() {
                 >
                   {result.tradeMode === 'redemption' ? (
                     <div className="px-5 pt-5">
-                      <div className="flex items-center justify-between gap-4 rounded-xl border border-teal-200 bg-teal-50/70 px-4 py-3">
+                      <div className="flex items-center justify-between gap-4 rounded-xl border border-primary/35 bg-accent/60 px-4 py-3">
                         <div>
-                          <p className="text-xs font-medium text-slate-500">
-                            本次赎回比例
+                          <p className="text-xs font-medium text-muted-foreground">
+                            {t('本次赎回比例')}
                           </p>
-                          <p className="mt-0.5 text-sm text-slate-600">
-                            净赎回金额 ÷ 当前 AUM
+                          <p className="mt-0.5 text-sm text-foreground/75">
+                            {t('净赎回金额 ÷ 当前 AUM')}
                           </p>
                         </div>
-                        <p className="text-xl font-semibold tabular-nums text-teal-800">
+                        <p className="text-xl font-semibold tabular-nums text-primary">
                           {percent(result.redemptionRatio * 100, 2)}
                         </p>
                       </div>
@@ -2587,36 +2769,38 @@ export default function Home() {
                   ) : null}
                   <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2">
                     <Metric
-                      label="交易后 AUM"
-                      value={`${number(result.postAum)} ${amountUnit}`}
-                      detail={`${result.tradeMode === 'redemption' ? '赎回' : '新增'} ${number(result.transactionAmount)} ${amountUnit}`}
+                      label={t('交易后 AUM')}
+                      value={`${number(result.postAum)} ${t(amountUnit)}`}
+                      detail={t(
+                        `${result.tradeMode === 'redemption' ? '赎回' : '新增'} ${number(result.transactionAmount)} ${amountUnit}`,
+                      )}
                     />
                     <Metric
-                      label="交易后 YTM"
+                      label={t('交易后 YTM')}
                       value={percent(result.postYtm, 3)}
                       detail={
                         result.tradeMode === 'redemption'
-                          ? '同比例赎回，与当前组合一致'
-                          : `新增资金 ${percent(result.allocationYield, 3)}`
+                          ? t('同比例赎回，与当前组合一致')
+                          : t(`新增资金 ${percent(result.allocationYield, 3)}`)
                       }
                       accent
                     />
                     <Metric
-                      label="交易后 WAM"
-                      value={`${number(result.postWam)} 天`}
+                      label={t('交易后 WAM')}
+                      value={`${number(result.postWam)}${t('天')}`}
                       detail={
                         result.tradeMode === 'redemption'
-                          ? '同比例赎回，与当前组合一致'
-                          : `计算所用上限 ${number(result.appliedMaxWam)} 天`
+                          ? t('同比例赎回，与当前组合一致')
+                          : t(`计算所用上限 ${number(result.appliedMaxWam)} 天`)
                       }
                     />
                     <Metric
-                      label="交易后 WAL"
-                      value={`${number(result.postWal)} 天`}
+                      label={t('交易后 WAL')}
+                      value={`${number(result.postWal)}${t('天')}`}
                       detail={
                         result.tradeMode === 'redemption'
-                          ? '同比例赎回，与当前组合一致'
-                          : `计算所用上限 ${number(result.appliedMaxWal)} 天`
+                          ? t('同比例赎回，与当前组合一致')
+                          : t(`计算所用上限 ${number(result.appliedMaxWal)} 天`)
                       }
                     />
                   </div>
@@ -2628,20 +2812,21 @@ export default function Home() {
                           <Alert className="border-amber-200 bg-amber-50">
                             <AlertTriangle />
                             <AlertTitle>
-                              仍有 {number(result.unallocated)} {amountUnit}{' '}
-                              未配置，期限或额度约束已限制继续投资。
+                              {t('仍有')}
+                              {number(result.unallocated)} {t(amountUnit)}{' '}
+                              {t('未配置，期限或额度约束已限制继续投资。')}
                             </AlertTitle>
                           </Alert>
                         </div>
                       ) : null}
 
-                      <div className="border-t border-slate-100">
+                      <div className="border-t border-border/60">
                         <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
-                          推荐金额与新增资金占比
+                          {t('推荐金额与新增资金占比')}
                         </h3>
                         {result.allocations.length ||
                         result.unallocated > EPSILON ? (
-                          <div className="divide-y divide-slate-100">
+                          <div className="divide-y divide-border/60">
                             {[...result.allocations]
                               .sort(
                                 (a, b) => b.amount * b.rate - a.amount * a.rate,
@@ -2655,19 +2840,20 @@ export default function Home() {
                                     <p className="truncate text-sm font-medium">
                                       {item.name}
                                     </p>
-                                    <p className="mt-0.5 text-xs text-slate-500">
+                                    <p className="mt-0.5 text-xs text-muted-foreground">
                                       {bankNames.get(item.bankId)} · WAM/WAL{' '}
                                       {number(quoteWamDays(item), 0)}/
-                                      {number(item.walDays, 0)}天 ·{' '}
-                                      {percent(item.rate)}
+                                      {number(item.walDays, 0)}
+                                      {t('天 ·')} {percent(item.rate)}
                                     </p>
                                   </div>
                                   <div className="text-right">
                                     <p className="font-semibold tabular-nums">
                                       {number(item.amount)}
                                     </p>
-                                    <p className="text-xs text-slate-400">
-                                      {amountUnit} · 占新增资金{' '}
+                                    <p className="text-xs text-muted-foreground/75">
+                                      {t(amountUnit)}
+                                      {t('· 占新增资金')}{' '}
                                       {result.transactionAmount > EPSILON
                                         ? percent(
                                             (item.amount /
@@ -2684,18 +2870,19 @@ export default function Home() {
                               <div className="flex items-center justify-between gap-3 px-5 py-3">
                                 <div>
                                   <p className="text-sm font-medium">
-                                    保留现金
+                                    {t('保留现金')}
                                   </p>
-                                  <p className="mt-0.5 text-xs text-slate-500">
-                                    零期限 · 零收益
+                                  <p className="mt-0.5 text-xs text-muted-foreground">
+                                    {t('零期限 · 零收益')}
                                   </p>
                                 </div>
                                 <div className="text-right">
                                   <p className="font-semibold tabular-nums">
                                     {number(result.unallocated)}
                                   </p>
-                                  <p className="text-xs text-slate-400">
-                                    {amountUnit} · 占新增资金{' '}
+                                  <p className="text-xs text-muted-foreground/75">
+                                    {t(amountUnit)}
+                                    {t('· 占新增资金')}{' '}
                                     {result.transactionAmount > EPSILON
                                       ? percent(
                                           (result.unallocated /
@@ -2710,48 +2897,54 @@ export default function Home() {
                             ) : null}
                           </div>
                         ) : (
-                          <p className="px-5 pb-4 text-sm text-slate-500">
-                            当前约束下没有正收益配置。
+                          <p className="px-5 pb-4 text-sm text-muted-foreground">
+                            {t('当前约束下没有正收益配置。')}
                           </p>
                         )}
                       </div>
                     </>
                   ) : (
                     <>
-                      <div className="border-t border-slate-100 px-5 py-4">
-                        <p className="text-sm font-semibold text-slate-800">
-                          按比例缩减当前持仓
+                      <div className="border-t border-border/60 px-5 py-4">
+                        <p className="text-sm font-semibold text-foreground">
+                          {t('按比例缩减当前持仓')}
                         </p>
-                        <p className="mt-1 text-sm leading-6 text-slate-500">
-                          下列金额来自当前持仓底表，合计等于本次净赎回金额；这是同比例情景，不代表赎回优先级。
+                        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                          {t(
+                            '下列金额来自当前持仓底表，合计等于本次净赎回金额；这是同比例情景，不代表赎回优先级。',
+                          )}
                         </p>
-                        <p className="mt-1 text-xs leading-5 text-slate-400">
-                          明细按当前金额单位四舍五入展示，计算与合计使用未舍入数值。
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground/75">
+                          {t(
+                            '明细按当前金额单位四舍五入展示，计算与合计使用未舍入数值。',
+                          )}
                         </p>
                       </div>
-                      <div className="divide-y divide-slate-100 border-t border-slate-100">
+                      <div className="divide-y divide-border/60 border-t border-border/60">
                         {result.holdings.map((holding) => (
                           <div
                             key={holding.id}
                             className="flex flex-col gap-2 px-5 py-3 sm:flex-row sm:items-center sm:justify-between"
                           >
                             <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-slate-800">
+                              <p className="truncate text-sm font-medium text-foreground">
                                 {holding.name}
                               </p>
-                              <p className="mt-0.5 text-xs text-slate-500">
+                              <p className="mt-0.5 text-xs text-muted-foreground">
                                 {holding.bankId === null
-                                  ? '不计入单一实体集中度'
+                                  ? t('不计入单一实体集中度')
                                   : (bankNames.get(holding.bankId) ??
-                                    '机构待修正')}
+                                    t('机构待修正'))}
                               </p>
                             </div>
                             <div className="text-left sm:text-right">
-                              <p className="text-sm font-semibold tabular-nums text-teal-700">
-                                赎回 {number(holding.redeemed)} {amountUnit}
+                              <p className="text-sm font-semibold tabular-nums text-primary">
+                                {t('赎回')}
+                                {number(holding.redeemed)} {t(amountUnit)}
                               </p>
-                              <p className="mt-0.5 text-xs text-slate-400">
-                                剩余 {number(holding.finalAmount)} {amountUnit}
+                              <p className="mt-0.5 text-xs text-muted-foreground/75">
+                                {t('剩余')}
+                                {number(holding.finalAmount)} {t(amountUnit)}
                               </p>
                             </div>
                           </div>
@@ -2760,12 +2953,14 @@ export default function Home() {
                     </>
                   )}
 
-                  <div className="border-t border-slate-100">
+                  <div className="border-t border-border/60">
                     <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
-                      <Landmark className="size-4 text-teal-700" />{' '}
-                      {result.tradeMode === 'redemption'
-                        ? '机构同比例赎回明细'
-                        : '交易后机构占比'}
+                      <Landmark className="size-4 text-primary" />{' '}
+                      {t(
+                        result.tradeMode === 'redemption'
+                          ? '机构同比例赎回明细'
+                          : '交易后机构占比',
+                      )}
                     </h3>
                     <div className="space-y-4 px-5 pb-5">
                       {result.banks.map((bank) => {
@@ -2780,7 +2975,7 @@ export default function Home() {
                         return (
                           <div key={bank.id}>
                             <div className="mb-1.5 flex flex-col gap-1 text-sm sm:flex-row sm:justify-between">
-                              <span className="font-medium text-slate-700">
+                              <span className="font-medium text-foreground/85">
                                 {bank.name}
                               </span>
                               <span>
@@ -2788,34 +2983,38 @@ export default function Home() {
                                 {percent(bank.limitPct)}
                               </span>
                             </div>
-                            <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                            <div className="h-2 overflow-hidden rounded-full bg-muted">
                               <div
                                 className={`h-full rounded-full ${
-                                  atLimit ? 'bg-amber-500' : 'bg-teal-500'
+                                  atLimit ? 'bg-amber-500' : 'bg-primary'
                                 }`}
                                 style={{ width: `${used}%` }}
                               />
                             </div>
-                            <div className="mt-1 flex flex-col gap-1 text-xs text-slate-400 sm:flex-row sm:justify-between">
+                            <div className="mt-1 flex flex-col gap-1 text-xs text-muted-foreground/75 sm:flex-row sm:justify-between">
                               <span>
                                 {result.tradeMode === 'redemption' ? (
                                   <>
-                                    赎回{' '}
+                                    {t('赎回')}{' '}
                                     {number(Math.abs(bank.transactionChange))}{' '}
-                                    {amountUnit} · 剩余{' '}
-                                    {number(bank.finalExposure)} {amountUnit}
+                                    {t(amountUnit)}
+                                    {t('· 剩余')} {number(bank.finalExposure)}{' '}
+                                    {t(amountUnit)}
                                   </>
                                 ) : (
                                   <>
-                                    新增 {number(bank.transactionChange)}{' '}
-                                    {amountUnit}
+                                    {t('新增')}
+                                    {number(bank.transactionChange)}{' '}
+                                    {t(amountUnit)}
                                   </>
                                 )}
                               </span>
                               <span>
                                 {atLimit
-                                  ? '已触及上限'
-                                  : `余量 ${number(bank.remaining)} ${amountUnit}`}
+                                  ? t('已触及上限')
+                                  : t(
+                                      `余量 ${number(bank.remaining)} ${amountUnit}`,
+                                    )}
                               </span>
                             </div>
                           </div>
@@ -2829,10 +3028,10 @@ export default function Home() {
                   <Alert variant="destructive" className="p-4">
                     <AlertTriangle />
                     <div>
-                      <AlertTitle>当前输入没有可行解</AlertTitle>
+                      <AlertTitle>{t('当前输入没有可行解')}</AlertTitle>
                       <ul className="mt-2 list-disc space-y-1 pl-4 text-sm">
                         {result.messages.map((message) => (
-                          <li key={message}>{message}</li>
+                          <li key={message}>{t(message)}</li>
                         ))}
                       </ul>
                     </div>
@@ -2844,5 +3043,84 @@ export default function Home() {
         ) : null}
       </div>
     </main>
+  );
+}
+
+function browserStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function applyDocumentTheme(theme: Theme) {
+  const root = document.documentElement;
+  root.classList.toggle('dark', theme === 'dark');
+  root.style.colorScheme = theme;
+}
+
+export default function Home() {
+  const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
+  const [theme, setTheme] = useState<Theme>(DEFAULT_THEME);
+
+  useEffect(() => {
+    const storage = browserStorage();
+    const savedLocale = readStoredPreference(
+      storage,
+      LOCALE_STORAGE_KEY,
+      parseLocale,
+      DEFAULT_LOCALE,
+    );
+    const savedTheme = readStoredPreference(
+      storage,
+      THEME_STORAGE_KEY,
+      parseTheme,
+      DEFAULT_THEME,
+    );
+
+    applyDocumentTheme(savedTheme);
+    queueMicrotask(() => {
+      setLocale(savedLocale);
+      setTheme(savedTheme);
+    });
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.lang = htmlLang(locale);
+    document.title = translateText(locale, 'MMF 配置台');
+    const description = document.querySelector<HTMLMetaElement>(
+      'meta[name="description"]',
+    );
+    if (description) {
+      description.content = translateText(
+        locale,
+        '基于收益、期限与机构敞口约束的货币市场基金配置规划器',
+      );
+    }
+  }, [locale]);
+
+  const changeLocale = (nextLocale: Locale) => {
+    setLocale(nextLocale);
+    writeStoredPreference(browserStorage(), LOCALE_STORAGE_KEY, nextLocale);
+  };
+
+  const toggleTheme = () => {
+    const nextTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    applyDocumentTheme(nextTheme);
+    writeStoredPreference(browserStorage(), THEME_STORAGE_KEY, nextTheme);
+  };
+
+  return (
+    <I18nProvider locale={locale}>
+      <PlannerWorkspace
+        locale={locale}
+        theme={theme}
+        onLocaleChange={changeLocale}
+        onThemeToggle={toggleTheme}
+      />
+    </I18nProvider>
   );
 }

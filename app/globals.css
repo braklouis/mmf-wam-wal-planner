@@ -122,6 +122,14 @@
 }
 
 @layer base {
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
   * {
     @apply border-border outline-ring/50;
   }
@@ -142,10 +150,69 @@
 
 @layer components {
   .eyebrow {
-    @apply text-xs font-semibold uppercase tracking-[0.1em] text-teal-700;
+    @apply text-primary text-xs font-semibold uppercase tracking-[0.1em];
   }
   .section-head {
-    @apply flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4;
+    @apply border-border/60 flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4;
+  }
+}
+
+@layer utilities {
+  .dark .bg-red-50,
+  .dark .bg-red-50\/90,
+  .dark .bg-red-100 {
+    background-color: color-mix(
+      in oklch,
+      var(--destructive) 22%,
+      var(--card)
+    ) !important;
+  }
+
+  .dark .border-red-300,
+  .dark .border-red-500 {
+    border-color: color-mix(in oklch, var(--destructive) 72%, white) !important;
+  }
+
+  .dark .text-red-600,
+  .dark .text-red-700,
+  .dark .text-red-800,
+  .dark .text-red-950 {
+    color: oklch(0.86 0.09 25) !important;
+  }
+
+  .dark .bg-yellow-50,
+  .dark .bg-yellow-100\/80,
+  .dark .bg-amber-50,
+  .dark .bg-amber-100 {
+    background-color: color-mix(
+      in oklch,
+      var(--chart-2) 20%,
+      var(--card)
+    ) !important;
+  }
+
+  .dark .border-yellow-300,
+  .dark .border-yellow-500,
+  .dark .border-amber-200 {
+    border-color: color-mix(in oklch, var(--chart-2) 66%, white) !important;
+  }
+
+  .dark .text-yellow-800,
+  .dark .text-amber-700,
+  .dark .text-amber-800 {
+    color: oklch(0.86 0.1 85) !important;
+  }
+
+  .dark .bg-emerald-100 {
+    background-color: color-mix(
+      in oklch,
+      var(--chart-4) 20%,
+      var(--card)
+    ) !important;
+  }
+
+  .dark .text-emerald-800 {
+    color: oklch(0.84 0.09 155) !important;
   }
 }
 

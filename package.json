@@ -1,5 +1,5 @@
 {
-  "name": "sites-project",
+  "name": "mmf-wam-wal-planner",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -10,7 +10,8 @@
     "build": "node node_modules/vinext/dist/cli.js build",
     "start": "node node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "lint": "node node_modules/oxlint/bin/oxlint",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit --incremental false",
+    "lint": "node node_modules/oxlint/bin/oxlint app lib tests components/ui/alert.tsx components/ui/badge.tsx components/ui/button.tsx components/ui/chart.tsx components/ui/input.tsx components/ui/native-select.tsx components/ui/table.tsx next.config.ts vite.config.ts",
     "format": "node node_modules/oxfmt/bin/oxfmt"
   },
   "dependencies": {
