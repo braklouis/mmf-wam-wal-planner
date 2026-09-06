@@ -700,13 +700,13 @@ export function redemptionStress(portfolio: Portfolio) {
   const pct = usesAmount
     ? portfolio.aum > 0
       ? (enteredAmount / portfolio.aum) * 100
-      : Number.NaN
+      : portfolio.aum === 0 && enteredAmount === 0 ? 0 : Number.NaN
     : (portfolio.redemptionStressPct ?? 0);
   const cash = portfolio.cashBufferAmount ?? 0;
   const baseAum =
     portfolio.aum +
     (portfolio.tradeMode === 'subscription' ? portfolio.transactionAmount : 0);
-  const redemption = usesAmount ? enteredAmount : (portfolio.aum * pct) / 100;
+  const redemption = usesAmount ? enteredAmount : portfolio.aum * (pct / 100);
   const stressedAum = baseAum - redemption;
   let error: string | null = null;
   if (!Number.isFinite(pct) || pct < 0 || pct >= 100)
@@ -884,7 +884,7 @@ export function optimiseSubscription(
     limits.push(
       Math.max(
         0,
-        ((stress.stressedAum * bank.limitPct) / 100 - bank.currentExposure) /
+        (stress.stressedAum * (bank.limitPct / 100) - bank.currentExposure) /
           postAum,
       ),
     );
@@ -1373,8 +1373,8 @@ export function buildFrontier(
 
   const minimum =
     mode === 'wam'
-      ? (portfolio.aum * portfolio.wam) / postAum
-      : (portfolio.aum * portfolio.wal) / postAum;
+      ? (portfolio.aum / postAum) * portfolio.wam
+      : (portfolio.aum / postAum) * portfolio.wal;
   const regulatoryCeiling =
     mode === 'wam' ? SFC_MAX_WAM_DAYS : SFC_MAX_WAL_DAYS;
   if (!Number.isFinite(minimum) || minimum > regulatoryCeiling + EPSILON) {
@@ -1497,16 +1497,16 @@ export function solveTargetYtm(
   const currentDuration = mode === 'wam' ? portfolio.wam : portfolio.wal;
   const lowerBound = Math.max(
     0,
-    (portfolio.aum * currentDuration) / upper.postAum,
+    (portfolio.aum / upper.postAum) * currentDuration,
   );
   const lower = optimiseSubscription(withLimit(lowerBound), banks, quotes);
-  if (lower.ok && lower.postYtm + yieldTolerance >= targetYtm) {
-    return { ok: true, limit: lowerBound, result: lower };
-  }
-
   let lowLimit = lowerBound;
-  let highLimit = ceiling;
-  for (let iteration = 0; iteration < 52; iteration += 1) {
+  // Even an immediately feasible minimum must pass through display rounding
+  // and re-solving so the shown limit matches the returned allocation.
+  let highLimit = lower.ok && lower.postYtm + yieldTolerance >= targetYtm
+    ? lowerBound
+    : ceiling;
+  for (let iteration = 0; iteration < 52 && lowLimit < highLimit; iteration += 1) {
     const middle = (lowLimit + highLimit) / 2;
     const outcome = optimiseSubscription(withLimit(middle), banks, quotes);
     if (outcome.ok && outcome.postYtm + yieldTolerance >= targetYtm) {
