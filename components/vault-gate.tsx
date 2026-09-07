@@ -43,8 +43,7 @@ export function VaultGate({ children }: { children: (vault: EncryptedVault, lock
     }}>
       <LockKeyhole className="h-9 w-9 text-primary" />
       <div><h1 className="text-2xl font-semibold">{mode === 'create' ? t('初始化加密保险库') : t('解锁 MMF 配置台')}</h1><p className="mt-2 text-sm text-muted-foreground">{mode === 'create' ? t('已有存档、机构库和集团资料会迁移至加密保险库。设置前请关闭此软件的其他页面。') : t('使用统一口令解锁本机的存档和机构库。')}</p></div>
-      {mode !== 'loading' && <><p className="text-sm text-muted-foreground">{t('所有加密内容统一使用高腾国际成立日期（YYYYMMDD）作为口令，无需另设密码。')}</p>
-      <Button type="submit" className="w-full" disabled={busy}>{busy ? t('正在处理…') : mode === 'create' ? t('初始化并加密') : t('解锁')}</Button></>}
+      {mode !== 'loading' && <Button type="submit" className="w-full" disabled={busy}>{busy ? t('正在处理…') : mode === 'create' ? t('初始化并加密') : t('解锁')}</Button>}
       {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
     </form>
   </main>;

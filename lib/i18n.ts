@@ -370,7 +370,6 @@ const englishCopy: Record<string, string> = {
   "解锁 MMF 配置台": "Unlock MMF Planner",
   "已有存档、机构库和集团资料会迁移至加密保险库。设置前请关闭此软件的其他页面。": "Existing archives, institutions and groups will be encrypted. Close other app tabs before setup.",
   "使用统一口令解锁本机的存档和机构库。": "Unlock local archives and institutions with the shared passcode.",
-  "所有加密内容统一使用高腾国际成立日期（YYYYMMDD）作为口令，无需另设密码。": "All encrypted content uses GaoTeng Global's incorporation date (YYYYMMDD) as the shared passcode; no separate password is required.",
   "正在处理…": "Processing…",
   "初始化并加密": "Initialize and encrypt",
   "解锁": "Unlock",
