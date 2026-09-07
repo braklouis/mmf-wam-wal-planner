@@ -224,14 +224,13 @@ void test('unknown user-authored text is preserved', () => {
   );
 });
 
-void test('recent modes, institutions, vault and calculation states have consistent translations', () => {
-  for (const source of ['现金缓冲比例', '汇总期限模式', '机构与集团', '口径与限制依据', '计算中…', '初始化加密保险库', '利率期限结构', '全部指标由持仓推导。']) {
+void test('recent modes, institutions and calculation states have consistent translations', () => {
+  for (const source of ['现金缓冲比例', '汇总期限模式', '机构与集团', '口径与限制依据', '计算中…', '利率期限结构', '全部指标由持仓推导。']) {
     assert.equal(translateText('zh-CN', source), source);
     assert.doesNotMatch(translateText('en', source), /[\u3400-\u9fff]/);
   }
   assert.equal(translateText('zh-HK', '机构与集团'), '機構與集團');
   assert.equal(translateText('zh-HK', '现金缓冲比例'), '現金緩衝比例');
-  assert.equal(translateText('zh-HK', '锁定'), '鎖定');
 });
 
 void test('billion unit displays in each locale including amount labels', () => {

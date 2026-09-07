@@ -4,8 +4,6 @@ import { DeepReviewButton } from '@/components/deep-review-button';
 import { MathPrinciples } from '@/components/math-principles';
 import { TermStructureEntry } from '@/components/term-structure-entry';
 import { canEditSummary, MODE_DESCRIPTIONS, cashBufferPercentage, resolvePortfolio, editSummary, switchPortfolioMode, MODE_LABELS, SUMMARY_FIELDS, type InputMode, type SummaryField } from '@/lib/portfolio-input';
-import { VaultGate } from '@/components/vault-gate';
-import { type EncryptedVault } from '@/lib/encrypted-vault';
 import { groupVersionsByMode, appendVersion, readVersions, renameVersion, deleteVersion, type SavedVersion } from '@/lib/workspace-versions';
 import { decodeWorkspace, type WorkspaceSnapshot } from '@/lib/workspace-save';
 import { parseQuoteTable } from '@/lib/quote-import';
@@ -128,15 +126,11 @@ const card =
   'rounded-md border border-border bg-card shadow-none';
 
 function PlannerWorkspace({
-  vault,
-  onLock,
   locale,
   theme,
   onLocaleChange,
   onThemeToggle,
 }: {
-  vault: EncryptedVault;
-  onLock: () => void;
   locale: Locale;
   theme: Theme;
   onLocaleChange: (locale: Locale) => void;
@@ -314,9 +308,9 @@ function PlannerWorkspace({
     let parsed: BankTemplate[] | null = null;
     let parsedGroups: InstitutionGroup[] = [];
     try {
-      const saved = vault.getItem(BANK_LIBRARY_STORAGE_KEY);
+      const saved = window.localStorage.getItem(BANK_LIBRARY_STORAGE_KEY);
       parsed = saved ? parseBankLibrary(saved) : null;
-      const groupData = vault.getItem(GROUP_STORAGE_KEY);
+      const groupData = window.localStorage.getItem(GROUP_STORAGE_KEY);
       const decoded = groupData ? JSON.parse(groupData) : null;
       parsedGroups = validGroups(decoded) ? decoded : groupsFromInstitutions(parsed ?? []);
     } catch {
@@ -331,7 +325,7 @@ function PlannerWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [vault]);
+  }, []);
 
   useEffect(() => {
     if (!bankLibraryLoaded) return;
@@ -348,14 +342,16 @@ function PlannerWorkspace({
         setTargetYtmMessage(null);
       });
     }
-    void vault.transaction(storage => {
-      storage.setItem(BANK_LIBRARY_STORAGE_KEY, JSON.stringify(library));
-      storage.setItem(GROUP_STORAGE_KEY, JSON.stringify(groups));
-    }).catch(error => {
-      if (!cancelled) setSaveMessage(`机构库加密保存失败：${error instanceof Error ? error.message : '请重试。'}`);
-    });
+    try {
+      window.localStorage.setItem(BANK_LIBRARY_STORAGE_KEY, JSON.stringify(library));
+      window.localStorage.setItem(GROUP_STORAGE_KEY, JSON.stringify(groups));
+    } catch {
+      queueMicrotask(() => {
+        if (!cancelled) setSaveMessage(t('保存失败：本机存储不可用或空间不足，原存档未覆盖。'));
+      });
+    }
     return () => { cancelled = true; };
-  }, [bankLibrary, bankLibraryLoaded, banks, groups, vault]);
+  }, [bankLibrary, bankLibraryLoaded, banks, groups, t]);
 
   useEffect(() => {
     const context = (document as Document & { modelContext?: WebModelContext })
@@ -814,10 +810,10 @@ function PlannerWorkspace({
     setDirty(true);
     clearTargetOutcome();
   };
-  const saveWorkspace = async () => {
+  const saveWorkspace = () => {
     try {
       const snapshot: WorkspaceSnapshot = { version: 1, savedAt: new Date().toISOString(), portfolioInput, banks, holdings, quotes, bankLibrary, groups, amountUnit, workspaceView, quoteView, quoteImportText, quoteImportOpen, quoteImportBankIds, manualMetrics: manualMetrics.current, frontierMode, targetYtm, storedResult, dirty, locale, theme, newBankName, newBankLimitPct, editingBankId, targetYtmError, targetYtmMessage };
-      const next = await vault.transaction(storage => appendVersion(storage, snapshot, id('saved-version')));
+      const next = appendVersion(window.localStorage, snapshot, id('saved-version'));
       setVersions(next);
       setSavedAt(snapshot.savedAt);
       setSaveMessage(t('已保存为新版本，之前的版本已保留。'));
@@ -827,7 +823,7 @@ function PlannerWorkspace({
   };
   const restoreWorkspace = () => {
     try {
-      const latest = readVersions(vault);
+      const latest = readVersions(window.localStorage);
       const entry = latest.find(version => version.id === restoreVersionId);
       if (!entry) { setSaveMessage(t('找不到此版本，请重新选择。')); setRestoreOpen(false); return; }
       const saved = decodeWorkspace(entry.data);
@@ -846,19 +842,19 @@ function PlannerWorkspace({
       setSavedAt(saved.savedAt); setRestoreOpen(false); setSaveMessage(t('已恢复保存的全部内容')); setBankLibraryMessage('');
     } catch { setRestoreOpen(false); setSaveMessage(t('恢复失败：存档损坏或版本不兼容，当前内容未更改。')); }
   };
-  const deleteSelectedVersion = async () => {
+  const deleteSelectedVersion = () => {
     try {
       if (!restoreVersionId) return;
-      const next = await vault.transaction(storage => deleteVersion(storage, restoreVersionId));
+      const next = deleteVersion(window.localStorage, restoreVersionId);
       setVersions(next); setSavedAt(next[0]?.savedAt ?? null);
       if (renamingVersionId === restoreVersionId) setRenamingVersionId(null);
       setRestoreVersionId(null); setRestoreOpen(false);
       setSaveMessage(t('版本已删除，当前工作内容保持不变。'));
     } catch { setRestoreOpen(false); setSaveMessage(t('删除失败，存档未更改，请重试。')); }
   };
-  const saveVersionName = async (versionId: string) => {
+  const saveVersionName = (versionId: string) => {
     try {
-      setVersions(await vault.transaction(storage => renameVersion(storage, versionId, versionNameDraft)));
+      setVersions(renameVersion(window.localStorage, versionId, versionNameDraft));
       setRenamingVersionId(null); setSaveMessage(t('版本名称已更新。'));
     } catch { setSaveMessage(t('重命名失败，请检查名称或本机存储。')); }
   };
@@ -866,10 +862,10 @@ function PlannerWorkspace({
     let cancelled = false;
     let entries: SavedVersion[] = [];
     let message = '';
-    try { entries = readVersions(vault); } catch { message = '版本列表读取失败，原存档未更改。'; }
+    try { entries = readVersions(window.localStorage); } catch { message = '版本列表读取失败，原存档未更改。'; }
     queueMicrotask(() => { if (!cancelled) { setVersions(entries); setSavedAt(entries[0]?.savedAt ?? null); if (message) setSaveMessage(t(message)); } });
     return () => { cancelled = true; };
-  }, [t, vault]);
+  }, [t]);
   const importQuoteTable = () => {
     const data = quoteImportPreview.data;
     if (!data) return;
@@ -1177,7 +1173,6 @@ function PlannerWorkspace({
             <MathPrinciples portfolio={portfolio} banks={modelBanks} quotes={quotes} holdings={holdings} amountUnit={amountUnit} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={onLock}>{t("锁定")}</Button>
             <Button variant="outline" size="sm" onClick={saveWorkspace}>{t('保存')}</Button>
             <Button variant={workspaceView === 'versions' ? 'default' : 'outline'} size="sm" aria-pressed={workspaceView === 'versions'} onClick={() => setWorkspaceView('versions')}>{t('版本管理')}</Button>
             <Button variant="outline" size="sm" onClick={() => setClearOpen(true)}><Trash2 />{t('清空所有')}</Button>
@@ -3196,14 +3191,12 @@ export default function Home() {
 
   return (
     <I18nProvider locale={locale}>
-      <VaultGate>{(vault, lock) => <PlannerWorkspace
-        vault={vault}
-        onLock={lock}
+      <PlannerWorkspace
         locale={locale}
         theme={theme}
         onLocaleChange={changeLocale}
         onThemeToggle={toggleTheme}
-      />}</VaultGate>
+      />
     </I18nProvider>
   );
 }
