@@ -971,14 +971,14 @@ function PlannerWorkspace({
     clearTargetOutcome();
   };
   const summaryFields = <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-    {SUMMARY_FIELDS.map(key => <NumberField key={key}
+    {SUMMARY_FIELDS.filter(key => !simpleMode || key !== 'cashBufferAmount').map(key => <NumberField key={key}
       readOnly={!canEditSummary(portfolioInput.inputMode, key)}
       label={t({ aum: '当前 AUM', ytm: '当前加权 YTM', wam: '当前 WAM', wal: '当前 WAL', cashBufferAmount: '现金缓冲金额' }[key])}
       value={portfolio[key] ?? 0} suffix={key === 'aum' || key === 'cashBufferAmount' ? t(amountUnit) : key === 'ytm' ? '%' : t('天')}
       error={key === 'aum' ? aumInputError : key === 'wam' ? currentWamInputError : key === 'wal' ? currentWalInputError : undefined}
       onChange={value => updatePortfolio(key, value ?? Number.NaN)} />)}
-    <NumberField readOnly={!simpleMode} label={t('现金缓冲比例')} value={cashBufferPercentage(portfolio)} suffix="%" min={0} max={100}
-      onChange={value => updatePortfolio('cashBufferPct', value ?? NaN)} />
+    {!simpleMode && <NumberField readOnly label={t('现金缓冲比例')} value={cashBufferPercentage(portfolio)} suffix="%" min={0} max={100}
+      onChange={value => updatePortfolio('cashBufferPct', value ?? NaN)} />}
   </div>;
   const selectFrontierDay = (mode: FrontierMode, day: number) => {
     if (isRedemption || holdingErrors.length) return;
@@ -1546,7 +1546,7 @@ function PlannerWorkspace({
                 </div>
                 <div className="space-y-4 p-5">
                   {summaryFields}
-                  <p className="text-sm text-muted-foreground">{simpleMode ? t('现金金额／占 AUM 比例联动，以最后输入项为准。') : t('现金缓冲按现金持仓汇总。')}</p>
+                  {!simpleMode && <p className="text-sm text-muted-foreground">{t('现金缓冲按现金持仓汇总。')}</p>}
                   {!simpleMode && <p className="text-sm text-muted-foreground">{t("持仓合计：")}{number(holdingTotal)} {t(amountUnit)}。{holdingTotalError ? t(holdingTotalError) : t('AUM 已对账。')}</p>}
                 </div>
               </section>
