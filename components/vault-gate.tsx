@@ -3,6 +3,7 @@ import { useI18n } from '@/components/i18n-provider';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { LockKeyhole } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { EncryptedVault, VAULT_KEY } from '@/lib/encrypted-vault';
 
 export function VaultGate({ children }: { children: (vault: EncryptedVault, lock: () => void) => ReactNode }) {
@@ -10,6 +11,8 @@ export function VaultGate({ children }: { children: (vault: EncryptedVault, lock
   const [mode, setMode] = useState<'loading' | 'create' | 'unlock'>('loading');
   const [vault, setVault] = useState<EncryptedVault | null>(null);
   const active = useRef<EncryptedVault | null>(null);
+  const [needsMigration, setNeedsMigration] = useState(false);
+  const [oldPassword, setOldPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -18,7 +21,7 @@ export function VaultGate({ children }: { children: (vault: EncryptedVault, lock
       const initialMode = localStorage.getItem(VAULT_KEY) === null ? 'create' : 'unlock';
       queueMicrotask(() => setMode(initialMode));
     } catch (err) { queueMicrotask(() => setError(err instanceof Error ? err.message : '无法访问本机存储。')); }
-    const close = () => { active.current?.close(); active.current = null; setVault(null); setMode('unlock'); };
+    const close = () => { active.current?.close(); active.current = null; setVault(null); setMode('unlock'); setNeedsMigration(false); setOldPassword(''); };
     const warn = (event: BeforeUnloadEvent) => { if (active.current?.isSaving) { event.preventDefault(); } };
     window.addEventListener('beforeunload', warn);
     window.addEventListener('pagehide', close);
@@ -36,14 +39,18 @@ export function VaultGate({ children }: { children: (vault: EncryptedVault, lock
       if (busy || mode === 'loading') return;
       setBusy(true); setError('');
       try {
-        const unlocked = await navigator.locks.request(VAULT_KEY, () => EncryptedVault.open(localStorage, mode === 'create'));
-        active.current = unlocked; setVault(unlocked);
-      } catch { setError(mode === 'create' ? '创建失败：请确认本机存储有可用空间。原有数据不会被明文覆盖。' : '无法使用固定成立日期口令解锁：存档可能使用旧密码、已经损坏，或本机存储不可用。原存档未覆盖。'); }
+        const unlocked = await navigator.locks.request(VAULT_KEY, () => needsMigration ? EncryptedVault.migrate(localStorage, oldPassword) : EncryptedVault.open(localStorage, mode === 'create'));
+        active.current = unlocked; setVault(unlocked); setOldPassword('');
+      } catch {
+        if (mode === 'unlock' && !needsMigration) setNeedsMigration(true);
+        else setError(mode === 'create' ? '创建失败：请确认本机存储有可用空间。原有数据不会被明文覆盖。' : '无法迁移旧存档：请检查旧密码；原存档未覆盖。');
+      }
       finally { setBusy(false); }
     }}>
       <LockKeyhole className="h-9 w-9 text-primary" />
-      <div><h1 className="text-2xl font-semibold">{mode === 'create' ? t('初始化加密保险库') : t('解锁 MMF 配置台')}</h1><p className="mt-2 text-sm text-muted-foreground">{mode === 'create' ? t('已有存档、机构库和集团资料会迁移至加密保险库。设置前请关闭此软件的其他页面。') : t('使用统一口令解锁本机的存档和机构库。')}</p></div>
-      {mode !== 'loading' && <Button type="submit" className="w-full" disabled={busy}>{busy ? t('正在处理…') : mode === 'create' ? t('初始化并加密') : t('解锁')}</Button>}
+      <div><h1 className="text-2xl font-semibold">{needsMigration ? t('迁移旧保险库') : mode === 'create' ? t('初始化加密保险库') : t('解锁 MMF 配置台')}</h1><p className="mt-2 text-sm text-muted-foreground">{needsMigration ? t('请输入原来的保险库密码。验证成功后会自动迁移，以后无需再输入。') : mode === 'create' ? t('已有存档、机构库和集团资料会迁移至加密保险库。设置前请关闭此软件的其他页面。') : t('使用统一口令解锁本机的存档和机构库。')}</p></div>
+      {needsMigration && <label htmlFor="old-vault-password" className="block space-y-2"><span>{t('原保险库密码')}</span><Input id="old-vault-password" type="password" autoComplete="current-password" required value={oldPassword} onChange={event => setOldPassword(event.target.value)} disabled={busy} /></label>}
+      {mode !== 'loading' && <Button type="submit" className="w-full" disabled={busy}>{busy ? t('正在处理…') : needsMigration ? t('迁移并解锁') : mode === 'create' ? t('初始化并加密') : t('解锁')}</Button>}
       {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
     </form>
   </main>;

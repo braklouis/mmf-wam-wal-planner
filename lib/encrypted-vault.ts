@@ -8,8 +8,8 @@ const vaultPassword = '20150102';
 const aad = new TextEncoder().encode('mmf-planner.vault.v1');
 const encode = (bytes: Uint8Array) => btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''));
 const decode = (value: string) => Uint8Array.from(atob(value), char => char.charCodeAt(0));
-async function derive(salt: Uint8Array<ArrayBuffer>) {
-  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(vaultPassword), 'PBKDF2', false, ['deriveKey']);
+async function derive(password: string, salt: Uint8Array<ArrayBuffer>) {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 async function encrypt(key: CryptoKey, salt: string, records: Records) {
@@ -17,13 +17,13 @@ async function encrypt(key: CryptoKey, salt: string, records: Records) {
   const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, new TextEncoder().encode(JSON.stringify(records)));
   return JSON.stringify({ version: 1, kdf: 'PBKDF2-SHA256', iterations, salt, iv: encode(iv), data: encode(new Uint8Array(data)) });
 }
-async function decrypt(raw: string) {
+async function decrypt(raw: string, password = vaultPassword) {
   const envelope = JSON.parse(raw);
   if (envelope.version !== 1 || envelope.kdf !== 'PBKDF2-SHA256' || envelope.iterations !== iterations) throw new Error('不支持的加密存档格式。');
   const salt = decode(envelope.salt);
   const iv = decode(envelope.iv);
   if (salt.length !== 16 || iv.length !== 12) throw new Error('加密存档损坏。');
-  const key = await derive(salt);
+  const key = await derive(password, salt);
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, decode(envelope.data));
   const records = JSON.parse(new TextDecoder().decode(plain));
   if (!records || typeof records !== 'object' || Array.isArray(records) || Object.entries(records).some(([name, value]) => !PRIVATE_KEYS.includes(name as typeof PRIVATE_KEYS[number]) || typeof value !== 'string')) throw new Error('加密存档损坏。');
@@ -53,7 +53,7 @@ export class EncryptedVault {
     }
     if (!create) throw new Error('找不到加密存档，请勿覆盖或重新初始化数据。');
     const salt = crypto.getRandomValues(new Uint8Array(16));
-    const key = await derive(salt);
+    const key = await derive(vaultPassword, salt);
     const records: Records = {};
     for (const name of PRIVATE_KEYS) {
       const value = storage.getItem(name);
@@ -66,6 +66,21 @@ export class EncryptedVault {
     if (storage.getItem(VAULT_KEY) !== raw) throw new Error('加密保存验证失败，旧数据未删除。');
     for (const name of PRIVATE_KEYS) storage.removeItem(name);
     return new EncryptedVault(storage, key, encode(salt), records, raw);
+  }
+  static async migrate(storage: Store, oldPassword: string) {
+    const existing = storage.getItem(VAULT_KEY);
+    if (existing === null) throw new Error('找不到需要迁移的旧保险库。');
+    const { records } = await decrypt(existing, oldPassword);
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const key = await derive(vaultPassword, salt);
+    const encodedSalt = encode(salt);
+    const raw = await encrypt(key, encodedSalt, records);
+    await decrypt(raw);
+    if (storage.getItem(VAULT_KEY) !== existing) throw new Error('存档已在另一页面更改，请重新载入后再迁移。');
+    storage.setItem(VAULT_KEY, raw);
+    if (storage.getItem(VAULT_KEY) !== raw) throw new Error('迁移保存验证失败，旧存档未覆盖。');
+    for (const name of PRIVATE_KEYS) storage.removeItem(name);
+    return new EncryptedVault(storage, key, encodedSalt, records, raw);
   }
   getItem(name: string) {
     if (this.closed) throw new Error('保险库已锁定。');

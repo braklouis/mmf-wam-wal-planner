@@ -5,6 +5,15 @@ function store() {
   const values = new Map<string, string>();
   return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
 }
+const encode = (bytes: Uint8Array) => btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''));
+async function writeLegacyVault(storage: ReturnType<typeof store>, password: string, records: Record<string, string>) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 600_000, hash: 'SHA-256' }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: new TextEncoder().encode('mmf-planner.vault.v1') }, key, new TextEncoder().encode(JSON.stringify(records)));
+  storage.setItem(VAULT_KEY, JSON.stringify({ version: 1, kdf: 'PBKDF2-SHA256', iterations: 600_000, salt: encode(salt), iv: encode(iv), data: encode(new Uint8Array(data)) }));
+}
 void test('migrates every private record, persists ciphertext only, unlocks and locks', async () => {
   const storage = store();
   for (const key of PRIVATE_KEYS) storage.setItem(key, `private secret: ${key}`);
@@ -31,6 +40,20 @@ void test('tampering cannot unlock or modify ciphertext', async () => {
   modified.data = (modified.data[0] === 'A' ? 'B' : 'A') + modified.data.slice(1);
   storage.setItem(VAULT_KEY, JSON.stringify(modified));
   await assert.rejects(EncryptedVault.open(storage, false));
+});
+void test('old-password vault migrates once without exposing or losing its records', async () => {
+  const storage = store();
+  const oldPassword = 'the previous private password';
+  await writeLegacyVault(storage, oldPassword, { [PRIVATE_KEYS[0]]: 'preserved secret' });
+  const original = storage.getItem(VAULT_KEY)!;
+  await assert.rejects(EncryptedVault.open(storage, false));
+  await assert.rejects(EncryptedVault.migrate(storage, 'wrong password'));
+  assert.equal(storage.getItem(VAULT_KEY), original);
+  const migrated = await EncryptedVault.migrate(storage, oldPassword);
+  assert.equal(migrated.getItem(PRIVATE_KEYS[0]), 'preserved secret');
+  assert.notEqual(storage.getItem(VAULT_KEY), original);
+  assert.ok(!storage.getItem(VAULT_KEY)!.includes(oldPassword));
+  assert.equal((await EncryptedVault.open(storage, false)).getItem(PRIVATE_KEYS[0]), 'preserved secret');
 });
 void test('failed migration preserves original plaintext', async () => {
   const storage = store();
