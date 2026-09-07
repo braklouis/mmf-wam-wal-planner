@@ -3,7 +3,6 @@ import { useI18n } from '@/components/i18n-provider';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { LockKeyhole } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { EncryptedVault, VAULT_KEY } from '@/lib/encrypted-vault';
 
 export function VaultGate({ children }: { children: (vault: EncryptedVault, lock: () => void) => ReactNode }) {
@@ -11,8 +10,6 @@ export function VaultGate({ children }: { children: (vault: EncryptedVault, lock
   const [mode, setMode] = useState<'loading' | 'create' | 'unlock'>('loading');
   const [vault, setVault] = useState<EncryptedVault | null>(null);
   const active = useRef<EncryptedVault | null>(null);
-  const [password, setPassword] = useState('');
-  const [confirmation, setConfirmation] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -21,7 +18,7 @@ export function VaultGate({ children }: { children: (vault: EncryptedVault, lock
       const initialMode = localStorage.getItem(VAULT_KEY) === null ? 'create' : 'unlock';
       queueMicrotask(() => setMode(initialMode));
     } catch (err) { queueMicrotask(() => setError(err instanceof Error ? err.message : '无法访问本机存储。')); }
-    const close = () => { active.current?.close(); active.current = null; setVault(null); setMode('unlock'); setPassword(''); setConfirmation(''); };
+    const close = () => { active.current?.close(); active.current = null; setVault(null); setMode('unlock'); };
     const warn = (event: BeforeUnloadEvent) => { if (active.current?.isSaving) { event.preventDefault(); } };
     window.addEventListener('beforeunload', warn);
     window.addEventListener('pagehide', close);
@@ -37,20 +34,17 @@ export function VaultGate({ children }: { children: (vault: EncryptedVault, lock
     <form className="w-full max-w-md space-y-5 rounded-2xl border border-border bg-card p-8 shadow-sm" onSubmit={async event => {
       event.preventDefault();
       if (busy || mode === 'loading') return;
-      if (mode === 'create' && password !== confirmation) { setError('两次输入的密码不一致。'); return; }
       setBusy(true); setError('');
       try {
-        const unlocked = await navigator.locks.request(VAULT_KEY, () => EncryptedVault.open(localStorage, password, mode === 'create'));
-        active.current = unlocked; setVault(unlocked); setPassword(''); setConfirmation('');
-      } catch { setError(mode === 'create' ? '创建失败：密码需至少 12 个字符，并请确认本机存储有可用空间。原有数据不会被明文覆盖。' : '无法解锁：密码错误、存档损坏或本机存储不可用。原存档未覆盖。'); }
+        const unlocked = await navigator.locks.request(VAULT_KEY, () => EncryptedVault.open(localStorage, mode === 'create'));
+        active.current = unlocked; setVault(unlocked);
+      } catch { setError(mode === 'create' ? '创建失败：请确认本机存储有可用空间。原有数据不会被明文覆盖。' : '无法使用固定成立日期口令解锁：存档可能使用旧密码、已经损坏，或本机存储不可用。原存档未覆盖。'); }
       finally { setBusy(false); }
     }}>
       <LockKeyhole className="h-9 w-9 text-primary" />
-      <div><h1 className="text-2xl font-semibold">{mode === 'create' ? t('设置保险库密码') : t('解锁 MMF 配置台')}</h1><p className="mt-2 text-sm text-muted-foreground">{mode === 'create' ? t('已有存档、机构库和集团资料会迁移至加密保险库。设置前请关闭此软件的其他页面。') : t('输入密码，解锁本机的存档和机构库。')}</p></div>
-      {mode !== 'loading' && <><label htmlFor="vault-password" className="block space-y-2"><span>{t("密码")}</span><Input id="vault-password" type="password" autoComplete={mode === 'create' ? 'new-password' : 'current-password'} required minLength={mode === 'create' ? 12 : undefined} value={password} onChange={event => setPassword(event.target.value)} disabled={busy} /></label>
-      {mode === 'create' && <label htmlFor="vault-confirmation" className="block space-y-2"><span>{t("确认密码")}</span><Input id="vault-confirmation" type="password" autoComplete="new-password" required value={confirmation} onChange={event => setConfirmation(event.target.value)} disabled={busy} /></label>}
-      <p className="text-sm text-muted-foreground">{t("密码不会保存，忘记后无法恢复数据。请使用较长且独有的密码，并妥善保管。")}</p>
-      <Button type="submit" className="w-full" disabled={busy}>{busy ? t('正在处理…') : mode === 'create' ? t('设置密码并加密') : t('解锁')}</Button></>}
+      <div><h1 className="text-2xl font-semibold">{mode === 'create' ? t('初始化加密保险库') : t('解锁 MMF 配置台')}</h1><p className="mt-2 text-sm text-muted-foreground">{mode === 'create' ? t('已有存档、机构库和集团资料会迁移至加密保险库。设置前请关闭此软件的其他页面。') : t('使用统一口令解锁本机的存档和机构库。')}</p></div>
+      {mode !== 'loading' && <><p className="text-sm text-muted-foreground">{t('所有加密内容统一使用高腾国际成立日期（YYYYMMDD）作为口令，无需另设密码。')}</p>
+      <Button type="submit" className="w-full" disabled={busy}>{busy ? t('正在处理…') : mode === 'create' ? t('初始化并加密') : t('解锁')}</Button></>}
       {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
     </form>
   </main>;
