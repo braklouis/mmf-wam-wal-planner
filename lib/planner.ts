@@ -1,7 +1,9 @@
+import { concentrationBuckets, concentrationMembershipErrors, validConcentrationMembership, type ConcentrationMembership } from './concentration-groups.ts';
 export type TradeMode = 'subscription' | 'redemption';
-export type WorkspaceView = 'planner' | 'holdings' | 'quotes';
+export type WorkspaceView = 'planner' | 'holdings' | 'quotes' | 'institutions' | 'versions';
 
 export type Portfolio = {
+  inputMode?: 'holdings' | 'simple';
   tradeMode: TradeMode;
   aum: number;
   ytm: number;
@@ -15,7 +17,7 @@ export type Portfolio = {
   cashBufferAmount?: number;
 };
 
-export type Bank = {
+export type Bank = ConcentrationMembership & {
   id: string;
   templateId: string | null;
   name: string;
@@ -26,7 +28,7 @@ export type ModelBank = Bank & {
   currentExposure: number;
 };
 
-export type BankTemplate = {
+export type BankTemplate = ConcentrationMembership & {
   id: string;
   name: string;
   defaultLimitPct: number;
@@ -41,7 +43,7 @@ export type Quote = {
   wamDays: number | null;
   walDays: number;
   rate: number;
-  cap: number;
+  cap: number | null;
 };
 
 export type Holding = {
@@ -733,6 +735,11 @@ export function optimiseSubscription(
   banks: ModelBank[],
   quotes: Quote[],
 ): SubscriptionModelResult {
+  const simple = portfolio.inputMode === 'simple';
+  if (simple) {
+    portfolio = { ...portfolio, redemptionStressPct: 0, redemptionStressAmount: null, cashBufferAmount: 0 };
+    banks = banks.map(bank => ({ ...bank, currentExposure: 0 }));
+  }
   const errors: string[] = [];
   if (new Set(banks.map(bank => bank.id)).size !== banks.length) errors.push('机构标识重复，请修正机构数据。');
   if (new Set(quotes.map(quote => quote.id)).size !== quotes.length) errors.push('报价标识重复，请修正报价数据。');
@@ -780,7 +787,7 @@ export function optimiseSubscription(
     if (!Number.isFinite(bank.currentExposure) || bank.currentExposure < 0) {
       errors.push(`${bank.name || '某机构'}的当前持有金额无效。`);
     }
-    const concentrationError = bankConcentrationError(bank.limitPct);
+    const concentrationError = simple ? null : bankConcentrationError(bank.limitPct);
     if (concentrationError) {
       errors.push(`${bank.name || '某机构'}：${concentrationError}`);
     }
@@ -790,13 +797,22 @@ export function optimiseSubscription(
       postAum > 0 &&
       Number.isFinite(bank.currentExposure) &&
       !concentrationError &&
-      exceedsUpperBound(bank.currentExposure, finalCap)
+      !simple && exceedsUpperBound(bank.currentExposure, finalCap)
     ) {
       errors.push(
         `${bank.name || '某机构'}现有敞口已超过压力后金额上限，新增配置无法修复。`,
       );
     }
   });
+  const sharedBuckets = simple ? [] : concentrationBuckets(banks);
+  if (!simple) {
+    errors.push(...concentrationMembershipErrors(banks, new Set(quotes.filter(q => q.cap === null || q.cap > 0).map(q => q.bankId))));
+    sharedBuckets.forEach(bucket => {
+      if (exceedsUpperBound(bucket.currentExposure, stress.stressedAum * (bucket.limitPct / 100))) {
+        errors.push(`${bucket.name}的${bucket.kind === 'group' ? '集团' : '同一实体'}现有敞口已超过上限，新增配置无法修复。`);
+      }
+    });
+  }
   const exposureTotalError = institutionExposureTotalError(portfolio, banks);
   if (exposureTotalError) errors.push(exposureTotalError);
 
@@ -824,7 +840,7 @@ export function optimiseSubscription(
     if (!Number.isFinite(quote.rate)) {
       errors.push(`${quote.name || '某产品'}的利率无效。`);
     }
-    if (!Number.isFinite(quote.cap) || quote.cap < 0) {
+    if (quote.cap !== null && (!Number.isFinite(quote.cap) || quote.cap < 0)) {
       errors.push(`${quote.name || '某产品'}的报价额度无效。`);
     }
   });
@@ -879,7 +895,7 @@ export function optimiseSubscription(
   limits.push(Math.max(0, wamAllowance));
   matrix.push(quotes.map((quote) => quote.walDays));
   limits.push(Math.max(0, walAllowance));
-  banks.forEach((bank) => {
+  banks.filter(() => !simple).forEach((bank) => {
     matrix.push(quotes.map((quote) => (quote.bankId === bank.id ? 1 : 0)));
     limits.push(
       Math.max(
@@ -889,9 +905,13 @@ export function optimiseSubscription(
       ),
     );
   });
+  sharedBuckets.forEach(bucket => {
+    matrix.push(quotes.map(quote => bucket.bankIds.includes(quote.bankId) ? 1 : 0));
+    limits.push(Math.max(0, (stress.stressedAum * (bucket.limitPct / 100) - bucket.currentExposure) / postAum));
+  });
   quotes.forEach((quote, quoteIndex) => {
     matrix.push(quotes.map((_, index) => (index === quoteIndex ? 1 : 0)));
-    limits.push(Math.min(transactionShare, quote.cap / postAum));
+    limits.push(quote.cap === null ? transactionShare : Math.min(transactionShare, quote.cap / postAum));
   });
 
   const raw = simplex(
@@ -950,18 +970,24 @@ export function optimiseSubscription(
       finalExposure,
       finalPct: (finalExposure / postAum) * 100,
       stressedPct: (finalExposure / stress.stressedAum) * 100,
-      remaining: Math.max(0, finalCap - finalExposure),
+      remaining: simple ? Infinity : Math.max(0, finalCap - finalExposure),
     };
   });
 
   const constraintErrors: string[] = [];
+  sharedBuckets.forEach(bucket => {
+    const finalExposure = bankOutcomes.filter(bank => bucket.bankIds.includes(bank.id)).reduce((sum, bank) => sum + bank.finalExposure, 0);
+    if (exceedsUpperBound(finalExposure, stress.stressedAum * (bucket.limitPct / 100))) {
+      constraintErrors.push(`${bucket.name}超过${bucket.kind === 'group' ? '集团' : '同一实体'}集中度上限。`);
+    }
+  });
   allocationShares.forEach((share, index) => {
     if (!Number.isFinite(share) || share < 0) {
       constraintErrors.push(
         `${quotes[index].name || '某产品'}的配置金额无效。`,
       );
     }
-    if (exceedsUpperBound(allocation[index], quotes[index].cap)) {
+    if (quotes[index].cap !== null && exceedsUpperBound(allocation[index], quotes[index].cap!)) {
       constraintErrors.push(`${quotes[index].name || '某产品'}超过报价额度。`);
     }
   });
@@ -977,7 +1003,7 @@ export function optimiseSubscription(
   if (exceedsUpperBound(postWal, effectiveMaxWal)) {
     constraintErrors.push('交易后 WAL 超过所选上限。');
   }
-  bankOutcomes.forEach((bank) => {
+  bankOutcomes.filter(() => !simple).forEach((bank) => {
     const finalCap = stress.stressedAum * (bank.limitPct / 100);
     if (
       !Number.isFinite(bank.finalPct) ||
@@ -1289,7 +1315,7 @@ export function calculatePlan(
   quotes: Quote[],
   holdings: Holding[],
 ): ModelResult {
-  const holdingErrors = holdingValidationErrors(portfolio, banks, holdings);
+  const holdingErrors = portfolio.inputMode === 'simple' && portfolio.tradeMode === 'subscription' ? [] : holdingValidationErrors(portfolio, banks, holdings);
   if (holdingErrors.length) {
     return {
       ok: false,
@@ -1332,10 +1358,19 @@ export function describeBindingConstraints(
       constraints.push(`${bank.name}集中度 ${percent(bank.limitPct)}`);
     }
   });
+  if (portfolio.inputMode !== 'simple') {
+    const stress = redemptionStress(portfolio);
+    concentrationBuckets(outcome.banks).forEach(bucket => {
+      const finalExposure = outcome.banks.filter(bank => bucket.bankIds.includes(bank.id)).reduce((sum, bank) => sum + bank.finalExposure, 0);
+      if (bucket.bankIds.some(id => quotedBankIds.has(id)) && stress.stressedAum * (bucket.limitPct / 100) - finalExposure <= bindingAmountTolerance) {
+        constraints.push(`${bucket.name}${bucket.kind === 'group' ? '集团' : '同一实体'}集中度 ${percent(bucket.limitPct)}`);
+      }
+    });
+  }
   outcome.allocations.forEach((allocation) => {
     const quote = quoteById.get(allocation.id);
     if (
-      quote &&
+      quote && quote.cap !== null &&
       quote.cap - allocation.amount <= bindingAmountTolerance
     ) {
       constraints.push(`「${allocation.name}」报价额度`);
@@ -1580,6 +1615,7 @@ export function parseBankLibrary(raw: string): BankTemplate[] | null {
       const name = typeof bank.name === 'string' ? bank.name.trim() : '';
       const normalizedName = name.toLocaleLowerCase('zh-CN');
       const isValid =
+        validConcentrationMembership(bank as BankTemplate) &&
         typeof bank.id === 'string' &&
         bank.id.length > 0 &&
         name.length > 0 &&

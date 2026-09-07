@@ -33,7 +33,7 @@ void test('12-bank 30-product optimisation remains feasible and scale invariant'
     const p = { ...e.portfolio, aum: 480 * scale, transactionAmount: 48 * scale,
       cashBufferAmount: 60 * scale, redemptionStressAmount: 48 * scale };
     const holdings = e.holdings.map(h => ({ ...h, amount: h.amount * scale }));
-    const quotes = e.quotes.map(q => ({ ...q, cap: q.cap * scale }));
+    const quotes = e.quotes.map(q => ({ ...q, cap: q.cap === null ? null : q.cap * scale }));
     const banks = aggregateInstitutionExposures(e.banks, holdings);
     const result = calculatePlan(p, banks, quotes, holdings);
     assert.ok(result.ok, JSON.stringify(result));

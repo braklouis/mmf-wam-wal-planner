@@ -45,7 +45,7 @@ void test('default subscription keeps the known optimum and every hard constrain
       result.transactionAmount + 1e-10,
   );
   result.allocations.forEach((item) => {
-    assert.ok(item.amount <= item.cap + 1e-10);
+    assert.ok(item.amount <= (item.cap ?? Infinity) + 1e-10);
   });
   result.banks.forEach((bank) => {
     assert.ok(bank.finalPct <= bank.limitPct + 1e-10);
@@ -93,7 +93,7 @@ void test('tiny-AUM subscription cannot cross an institution or WAM limit', () =
   assert.ok(result.postWam <= 60);
   assert.ok(result.postWal <= 120);
   closeTo(result.banks[0].finalPct, 25, 1e-12);
-  assert.ok(result.allocations[0].amount <= result.allocations[0].cap);
+  assert.ok(result.allocations[0].amount <= (result.allocations[0].cap ?? Infinity));
 });
 
 void test('simplex retains a positive objective far below the largest rate scale', () => {
