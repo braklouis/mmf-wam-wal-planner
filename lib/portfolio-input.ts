@@ -5,9 +5,9 @@ export type SummaryField = typeof SUMMARY_FIELDS[number];
 export const MODE_LABELS = { simple: '简易模式', holdings: '持仓模式', aggregate: '汇总期限模式' } as const;
 export type InputMode = keyof typeof MODE_LABELS;
 export const MODE_DESCRIPTIONS = {
-  holdings: 'AUM、YTM、WAM、WAL 和现金缓冲全部从持仓明细计算，请编辑下方持仓。',
-  aggregate: 'AUM、YTM 和现金缓冲从持仓明细计算；仅组合 WAM、WAL 手动输入，逐笔期限不参与计算。',
-  simple: '手动输入组合汇总和现金缓冲，不使用持仓明细，也不检查机构及集团集中度。',
+  holdings: '全部指标由持仓推导。',
+  aggregate: '仅 WAM／WAL 手填，其余由持仓推导。',
+  simple: '汇总指标手填，不校验集中度。',
 } as const;
 export function canEditSummary(mode: Portfolio['inputMode'], key: SummaryField | 'cashBufferPct') {
   return mode === 'simple' || mode === 'aggregate' && (key === 'wam' || key === 'wal');

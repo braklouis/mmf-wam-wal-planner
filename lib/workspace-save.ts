@@ -39,7 +39,7 @@ export function decodeWorkspace(raw: string): WorkspaceSnapshot {
       !rows(v.banks, ['id', 'name'], ['limitPct']) || !rows(v.holdings, ['id', 'name'], ['amount']) ||
       !rows(v.quotes, ['id', 'name', 'bankId'], ['rate', 'walDays']) || !v.quotes.every((q: Quote) => (q.cap === null || typeof q.cap === 'number') && (q.wamDays === null || typeof q.wamDays === 'number')) ||
       !rows(v.bankLibrary, ['id', 'name'], ['defaultLimitPct']) || !v.banks.every(validConcentrationMembership) || !v.bankLibrary.every(validConcentrationMembership) ||
-      !['元', '万元', '百万元', '亿元'].includes(v.amountUnit) || !['planner', 'holdings', 'quotes', 'institutions', 'versions'].includes(v.workspaceView) ||
+      !['元', '万元', '百万元', '亿元', 'Billion'].includes(v.amountUnit) || !['planner', 'holdings', 'quotes', 'institutions', 'versions'].includes(v.workspaceView) ||
       !['matrix', 'details'].includes(v.quoteView) || !['wam', 'wal'].includes(v.frontierMode) ||
       !['zh-CN', 'zh-HK', 'en'].includes(v.locale) || !['light', 'dark'].includes(v.theme) ||
       typeof v.dirty !== 'boolean' || typeof v.quoteImportText !== 'string' || typeof v.quoteImportOpen !== 'boolean' ||

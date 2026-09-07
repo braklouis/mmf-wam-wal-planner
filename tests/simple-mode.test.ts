@@ -6,7 +6,7 @@ const portfolio: Portfolio = { inputMode: 'simple', tradeMode: 'subscription', a
 const banks = [{ id: 'a', templateId: null, name: 'A', limitPct: 10, currentExposure: 100 }];
 const quote: Quote = { id: 'q', name: 'Quote', bankId: 'a', wamDays: null, walDays: 30, rate: 5, cap: null };
 
-void test('simple mode uses manual metrics and ignores holdings and concentration while retaining cash stress', () => {
+void test('simple mode uses manual metrics and ignores holdings and concentration and cash stress', () => {
   const result = calculatePlan(portfolio, banks, [quote], []);
   assert.equal(result.ok, true);
   if (!result.ok || result.tradeMode !== 'subscription') return;
@@ -46,10 +46,12 @@ void test('frontier and reverse target search support simple mode and unlimited 
   if (reverse.ok) assert.ok(reverse.result.postYtm >= 3 - 1e-8);
 });
 
-void test('simple mode enforces cash buffer in optimisation, frontier and reverse search', () => {
-  const invalid = { ...portfolio, redemptionStressPct: 15 };
-  assert.equal(optimiseSubscription(invalid, banks, [quote]).ok, false);
-  assert.deepEqual(buildFrontier('wam', invalid, banks, [quote]), []);
-  assert.equal(solveTargetYtm('wam', 3, invalid, banks, [quote]).ok, false);
-  assert.ok(optimiseSubscription({ ...invalid, cashBufferAmount: 20 }, banks, [quote]).ok);
+void test('simple mode ignores inactive stress inputs in optimisation, frontier and reverse search', () => {
+  const baseline = optimiseSubscription(portfolio, banks, [quote]);
+  for (const stress of [15, NaN, Infinity, -1]) {
+    const input = { ...portfolio, redemptionStressPct: stress, redemptionStressAmount: stress, cashBufferAmount: 0 };
+    assert.deepEqual(optimiseSubscription(input, banks, [quote]), baseline);
+    assert.ok(buildFrontier('wam', input, banks, [quote]).length > 0);
+    assert.ok(solveTargetYtm('wam', 3, input, banks, [quote]).ok);
+  }
 });

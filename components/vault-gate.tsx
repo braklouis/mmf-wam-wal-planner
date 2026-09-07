@@ -1,4 +1,5 @@
 'use client';
+import { useI18n } from '@/components/i18n-provider';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { LockKeyhole } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -6,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { EncryptedVault, VAULT_KEY } from '@/lib/encrypted-vault';
 
 export function VaultGate({ children }: { children: (vault: EncryptedVault, lock: () => void) => ReactNode }) {
+  const { t } = useI18n();
   const [mode, setMode] = useState<'loading' | 'create' | 'unlock'>('loading');
   const [vault, setVault] = useState<EncryptedVault | null>(null);
   const active = useRef<EncryptedVault | null>(null);
@@ -26,8 +28,8 @@ export function VaultGate({ children }: { children: (vault: EncryptedVault, lock
     return () => { window.removeEventListener('beforeunload', warn); window.removeEventListener('pagehide', close); active.current?.close(); };
   }, []);
   const lock = () => {
-    if (vault?.isSaving) { window.alert('正在加密保存，请稍候再锁定。'); return; }
-    if (!window.confirm('锁定后未保存的工作内容会清除。请先保存需要保留的内容，确定锁定？')) return;
+    if (vault?.isSaving) { window.alert(t('正在加密保存，请稍候再锁定。')); return; }
+    if (!window.confirm(t('锁定后未保存的工作内容会清除。请先保存需要保留的内容，确定锁定？'))) return;
     vault?.close(); setVault(null); setMode('unlock'); setError('');
   };
   if (vault) return children(vault, lock);
@@ -44,12 +46,12 @@ export function VaultGate({ children }: { children: (vault: EncryptedVault, lock
       finally { setBusy(false); }
     }}>
       <LockKeyhole className="h-9 w-9 text-primary" />
-      <div><h1 className="text-2xl font-semibold">{mode === 'create' ? '设置保险库密码' : '解锁 MMF 配置台'}</h1><p className="mt-2 text-sm text-muted-foreground">{mode === 'create' ? '已有存档、机构库和集团资料会迁移至加密保险库。设置前请关闭此软件的其他页面。' : '输入密码，解锁本机的存档和机构库。'}</p></div>
-      {mode !== 'loading' && <><label htmlFor="vault-password" className="block space-y-2"><span>密码</span><Input id="vault-password" type="password" autoComplete={mode === 'create' ? 'new-password' : 'current-password'} required minLength={mode === 'create' ? 12 : undefined} value={password} onChange={event => setPassword(event.target.value)} disabled={busy} /></label>
-      {mode === 'create' && <label htmlFor="vault-confirmation" className="block space-y-2"><span>确认密码</span><Input id="vault-confirmation" type="password" autoComplete="new-password" required value={confirmation} onChange={event => setConfirmation(event.target.value)} disabled={busy} /></label>}
-      <p className="text-sm text-muted-foreground">密码不会保存，忘记后无法恢复数据。请使用较长且独有的密码，并妥善保管。</p>
-      <Button type="submit" className="w-full" disabled={busy}>{busy ? '正在处理…' : mode === 'create' ? '设置密码并加密' : '解锁'}</Button></>}
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      <div><h1 className="text-2xl font-semibold">{mode === 'create' ? t('设置保险库密码') : t('解锁 MMF 配置台')}</h1><p className="mt-2 text-sm text-muted-foreground">{mode === 'create' ? t('已有存档、机构库和集团资料会迁移至加密保险库。设置前请关闭此软件的其他页面。') : t('输入密码，解锁本机的存档和机构库。')}</p></div>
+      {mode !== 'loading' && <><label htmlFor="vault-password" className="block space-y-2"><span>{t("密码")}</span><Input id="vault-password" type="password" autoComplete={mode === 'create' ? 'new-password' : 'current-password'} required minLength={mode === 'create' ? 12 : undefined} value={password} onChange={event => setPassword(event.target.value)} disabled={busy} /></label>
+      {mode === 'create' && <label htmlFor="vault-confirmation" className="block space-y-2"><span>{t("确认密码")}</span><Input id="vault-confirmation" type="password" autoComplete="new-password" required value={confirmation} onChange={event => setConfirmation(event.target.value)} disabled={busy} /></label>}
+      <p className="text-sm text-muted-foreground">{t("密码不会保存，忘记后无法恢复数据。请使用较长且独有的密码，并妥善保管。")}</p>
+      <Button type="submit" className="w-full" disabled={busy}>{busy ? t('正在处理…') : mode === 'create' ? t('设置密码并加密') : t('解锁')}</Button></>}
+      {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
     </form>
   </main>;
 }

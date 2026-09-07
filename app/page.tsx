@@ -1,5 +1,8 @@
 'use client';
 
+import { DeepReviewButton } from '@/components/deep-review-button';
+import { MathPrinciples } from '@/components/math-principles';
+import { TermStructureEntry } from '@/components/term-structure-entry';
 import { canEditSummary, MODE_DESCRIPTIONS, cashBufferPercentage, resolvePortfolio, editSummary, switchPortfolioMode, MODE_LABELS, SUMMARY_FIELDS, type InputMode, type SummaryField } from '@/lib/portfolio-input';
 import { VaultGate } from '@/components/vault-gate';
 import { type EncryptedVault } from '@/lib/encrypted-vault';
@@ -13,10 +16,10 @@ import { InstitutionManager } from '@/components/institution-manager';
 import { GROUP_STORAGE_KEY, groupsFromInstitutions, validGroups, applyGroupRegistry, renameGroupMembers, type InstitutionGroup } from '@/lib/group-registry';
 import { syncBankLimits } from '@/lib/bank-limits';
 import { holdingMetrics } from '@/lib/holding-metrics';
-import { normalizeNumericInput } from '@/lib/numeric-input';
+import { EditableNumberInput, NumberField, Metric } from '@/components/planner-fields';
+import { FrontierPanel } from '@/components/frontier-panel';
 
 import {
-  type ComponentProps,
   useEffect,
   useMemo,
   useRef,
@@ -36,27 +39,14 @@ import {
   Trash2,
   Wallet,
 } from 'lucide-react';
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ReferenceDot,
-  ReferenceLine,
-  XAxis,
-  YAxis,
-} from 'recharts';
+
 
 import { I18nProvider, useI18n } from '@/components/i18n-provider';
 import { Alert, AlertTitle } from '@/components/ui/alert';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from '@/components/ui/chart';
+
 import { Input } from '@/components/ui/input';
 import {
   NativeSelect,
@@ -134,482 +124,8 @@ import {
 const FRONTIER_DEBOUNCE_MS = 180;
 const emptyPortfolio: Portfolio = { tradeMode: 'subscription', aum: 0, ytm: 0, wam: 0, wal: 0, transactionAmount: 0, maxWam: null, maxWal: null, redemptionStressPct: 0, redemptionStressAmount: null, cashBufferAmount: 0 };
 
-function numericDraft(value: number | null) {
-  return value === null || !Number.isFinite(value) ? '' : String(value);
-}
-
-function parseNumericDraft(value: string) {
-  if (value === '' || value === '-' || value === '.' || value === '-.') {
-    return null;
-  }
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? (parsed === 0 ? 0 : parsed) : null;
-}
-
-type EditableNumberInputProps = Omit<
-  ComponentProps<typeof Input>,
-  'type' | 'inputMode' | 'value' | 'onChange'
-> & {
-  value: number | null;
-  onValueChange: (value: number | null) => void;
-};
-
-function EditableNumberInput({
-  value,
-  onValueChange,
-  onFocus,
-  onBlur,
-  onKeyDown,
-  ...props
-}: EditableNumberInputProps) {
-  const [draft, setDraft] = useState(() => numericDraft(value));
-  const editing = useRef(false);
-
-  useEffect(() => {
-    if (!editing.current) setDraft(numericDraft(value));
-  }, [value]);
-
-  return (
-    <Input
-      {...props}
-      type="text"
-      inputMode="decimal"
-      value={props.readOnly ? (value === null || !Number.isFinite(value) ? '—' : number(value, 3)) : draft}
-      onFocus={(event) => {
-        editing.current = !props.readOnly;
-        onFocus?.(event);
-      }}
-      onChange={(event) => {
-        if (props.readOnly) return;
-        const next = normalizeNumericInput(event.target.value);
-        if (next === null) return;
-        setDraft(next);
-        onValueChange(parseNumericDraft(next));
-      }}
-      onBlur={(event) => {
-        editing.current = false;
-        if (props.readOnly) { onBlur?.(event); return; }
-        const parsed = parseNumericDraft(draft);
-        setDraft(parsed === null ? '' : String(parsed));
-        if (!Object.is(parsed, value)) onValueChange(parsed);
-        onBlur?.(event);
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') event.currentTarget.blur();
-        onKeyDown?.(event);
-      }}
-    />
-  );
-}
-
-function NumberField({
-  label,
-  value,
-  suffix,
-  onChange,
-  optional,
-  min,
-  max,
-  error,
-  warning,
-  warningTone = 'yellow',
-  readOnly = false,
-}: {
-  label: string;
-  value: number | null;
-  suffix: string;
-  onChange: (value: number | null) => void;
-  optional?: boolean;
-  min?: number;
-  max?: number;
-  error?: string | null;
-  warning?: string | null;
-  warningTone?: 'yellow' | 'red';
-  readOnly?: boolean;
-}) {
-  const { t } = useI18n();
-  const fallbackError =
-    value === null
-      ? optional
-        ? null
-        : `${label}不能为空。`
-      : !Number.isFinite(value)
-        ? `${label}必须是有效数字。`
-        : null;
-  const validationError = error ?? fallbackError;
-  const isRed = Boolean(validationError || (warning && warningTone === 'red'));
-  const isYellow = Boolean(warning && warningTone === 'yellow' && !isRed);
-
-  return (
-    <label
-      className={`grid gap-1.5 rounded-xl border p-2 ${
-        isRed
-          ? 'border-red-300 bg-red-50'
-          : isYellow
-            ? 'border-yellow-300 bg-yellow-100/80'
-            : 'border-transparent'
-      }`}
-    >
-      <span className="flex justify-between text-sm font-medium text-foreground/85">
-        {t(label)}
-        {readOnly ? (
-          <span className="text-xs font-normal text-muted-foreground">
-            {t('自动计算')}
-          </span>
-        ) : optional ? (
-          <span className="text-xs font-normal text-muted-foreground/75">
-            {t('可留空')}
-          </span>
-        ) : null}
-      </span>
-      <span className="relative">
-        <EditableNumberInput
-          readOnly={readOnly}
-          min={min}
-          max={max}
-          step="0.01"
-          value={value}
-          onValueChange={readOnly ? () => {} : onChange}
-          aria-invalid={validationError ? true : undefined}
-          className={`h-10 rounded-xl pr-12 text-base ${
-            isRed
-              ? 'border-red-300 bg-red-50 text-red-950 focus-visible:border-red-500 focus-visible:ring-red-500/15'
-              : isYellow
-                ? 'border-yellow-300 bg-yellow-50 text-foreground focus-visible:border-yellow-500 focus-visible:ring-yellow-500/15'
-                : readOnly
-                  ? 'cursor-default border-border bg-muted text-muted-foreground dark:bg-muted focus-visible:border-border focus-visible:ring-0'
-                  : 'border-border bg-card focus-visible:border-primary focus-visible:ring-primary/20'
-          }`}
-        />
-        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground/75">
-          {t(suffix)}
-        </span>
-      </span>
-      {validationError ? (
-        <span role="alert" className="text-xs font-medium text-red-600">
-          {t(validationError)}
-        </span>
-      ) : warning ? (
-        <span
-          aria-live="polite"
-          className={`text-xs font-medium ${
-            warningTone === 'red' ? 'text-red-700' : 'text-yellow-800'
-          }`}
-        >
-          {t(warning)}
-        </span>
-      ) : null}
-    </label>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  detail,
-  accent,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  accent?: boolean;
-}) {
-  const { t } = useI18n();
-  return (
-    <div
-      className={`rounded-2xl border p-4 ${
-        accent ? 'border-primary/35 bg-accent/70' : 'border-border bg-muted/40'
-      }`}
-    >
-      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-        {t(label)}
-      </p>
-      <p className="mt-2 text-2xl font-semibold tracking-tight">{t(value)}</p>
-      <p className="mt-1 text-xs text-muted-foreground">{t(detail)}</p>
-    </div>
-  );
-}
-
-const frontierChartConfig = {
-  ytm: {
-    label: 'YTM',
-    color: 'var(--chart-1)',
-  },
-} satisfies ChartConfig;
-
-function FrontierPanel({
-  mode,
-  points,
-  currentLimit,
-  onSelect,
-  targetYtm,
-  targetYtmError,
-  targetYtmMessage,
-  onTargetYtmChange,
-  onSolveTarget,
-  disabled,
-}: {
-  mode: FrontierMode;
-  points: FrontierPoint[];
-  currentLimit: number | null;
-  onSelect: (day: number) => void;
-  targetYtm: number | null;
-  targetYtmError: string | null;
-  targetYtmMessage: string | null;
-  onTargetYtmChange: (value: number | null) => void;
-  onSolveTarget: () => void;
-  disabled?: boolean;
-}) {
-  const { t } = useI18n();
-  const label = mode.toUpperCase();
-  const targetControl = (
-    <form
-      className="mt-4 rounded-2xl border border-primary/25 bg-accent/50 p-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onSolveTarget();
-      }}
-    >
-      <div className="flex flex-wrap items-end gap-3">
-        <label htmlFor="target-ytm" className="min-w-44 flex-1">
-          <span className="mb-1.5 block text-sm font-semibold text-foreground">
-            {t('目标交易后 YTM')}
-          </span>
-          <span className="relative block">
-            <EditableNumberInput
-              id="target-ytm"
-              aria-label={t('目标交易后YTM百分比')}
-              aria-invalid={targetYtmError ? true : undefined}
-              value={targetYtm}
-              step="0.001"
-              disabled={disabled}
-              placeholder={t('例如 3.000')}
-              onValueChange={onTargetYtmChange}
-              className={`h-10 rounded-xl pr-9 text-base ${
-                targetYtmError
-                  ? 'border-red-300 bg-red-50 text-red-950'
-                  : 'border-primary/35 bg-card focus-visible:border-primary focus-visible:ring-primary/20'
-              }`}
-            />
-            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground/75">
-              %
-            </span>
-          </span>
-        </label>
-        <Button
-          type="submit"
-          disabled={disabled || targetYtm === null}
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          {t('反推期限与配置比例')}
-          <ArrowRight />
-        </Button>
-      </div>
-      <p className="mt-2 text-xs leading-5 text-muted-foreground">
-        {t('目标按“至少达到”处理；系统反推所选')}
-        {label}{' '}
-        {t('的最短上限和产品比例，另一项当前上限及 SFC 硬上限继续生效。')}［1］
-      </p>
-      {targetYtmError ? (
-        <p role="alert" className="mt-2 text-xs font-medium text-red-700">
-          {t(targetYtmError)}
-        </p>
-      ) : targetYtmMessage ? (
-        <p aria-live="polite" className="mt-2 text-xs font-medium text-primary">
-          {t(targetYtmMessage)}
-        </p>
-      ) : null}
-    </form>
-  );
-
-  if (!points.length) {
-    return (
-      <div className="p-5">
-        <Alert variant="destructive">
-          <AlertTriangle />
-          <AlertTitle>
-            {t('当前组合在 SFC 的')}
-            {label} {t('区间内没有可行点，请先放宽另一项期限约束或检查输入。')}
-          </AlertTitle>
-        </Alert>
-        {targetControl}
-      </div>
-    );
-  }
-
-  const first = points[0]!;
-  const last = points[points.length - 1]!;
-  const plateau = points.find((point) => point.isPlateauStart) ?? last;
-  const hasPlateau = plateau.day < last.day - 0.001;
-
-  return (
-    <div className="p-5">
-      <div className="min-w-0">
-        <ChartContainer
-          config={frontierChartConfig}
-          className="h-[290px] w-full cursor-crosshair aspect-auto"
-          initialDimension={{ width: 760, height: 290 }}
-        >
-          <LineChart
-            data={points}
-            margin={{ top: 12, right: 18, bottom: 8, left: 4 }}
-            onClick={(state) => {
-              const day = Number(state?.activeLabel);
-              if (Number.isFinite(day)) onSelect(day);
-            }}
-          >
-            <CartesianGrid vertical={false} strokeDasharray="4 4" />
-            <XAxis
-              dataKey="day"
-              type="number"
-              domain={['dataMin', 'dataMax']}
-              tickLine={false}
-              axisLine={false}
-              tickMargin={10}
-              tickCount={7}
-              unit={t('天')}
-            />
-            <YAxis
-              dataKey="ytm"
-              type="number"
-              domain={['auto', 'auto']}
-              tickLine={false}
-              axisLine={false}
-              tickMargin={8}
-              width={58}
-              tickFormatter={(value) => `${Number(value).toFixed(2)}%`}
-            />
-            <ChartTooltip
-              cursor={{
-                stroke: 'var(--muted-foreground)',
-                strokeDasharray: '4 4',
-              }}
-              content={
-                <ChartTooltipContent
-                  hideLabel
-                  formatter={(value, _name, item) => (
-                    <div className="grid min-w-36 gap-1">
-                      <span className="text-muted-foreground">
-                        {label}
-                        {t('上限')}
-                        {number(item.payload.day)}
-                        {t('天')}
-                      </span>
-                      <span className="font-semibold text-foreground">
-                        {t('最高 YTM')}
-                        {percent(Number(value), 3)}
-                      </span>
-                      <span className="text-muted-foreground">
-                        {t('实际 WAM')}
-                        {number(item.payload.wam)}
-                        {t('天 · WAL')} {number(item.payload.wal)}
-                        {t('天')}
-                      </span>
-                      <span className="text-primary">
-                        {t('较最紧点 +')}
-                        {number((item.payload.ytm - first.ytm) * 100, 1)} bp
-                      </span>
-                      {item.payload.bindingConstraints?.length ? (
-                        <span className="max-w-56 text-muted-foreground">
-                          {t('约束：')}
-                          {item.payload.bindingConstraints.map(t).join(t('、'))}
-                        </span>
-                      ) : null}
-                    </div>
-                  )}
-                />
-              }
-            />
-            {currentLimit !== null ? (
-              <ReferenceLine
-                x={currentLimit}
-                ifOverflow="extendDomain"
-                stroke="var(--chart-2)"
-                strokeDasharray="5 4"
-                label={{
-                  value: t('当前选择'),
-                  position: 'insideTopRight',
-                  fill: 'var(--chart-2)',
-                  fontSize: 12,
-                }}
-              />
-            ) : null}
-            {hasPlateau ? (
-              <ReferenceLine
-                x={plateau.day}
-                stroke="var(--muted-foreground)"
-                strokeDasharray="3 4"
-              />
-            ) : null}
-            {targetYtm !== null &&
-            Number.isFinite(targetYtm) &&
-            targetYtm >= first.ytm - 0.0001 &&
-            targetYtm <= last.ytm + 0.0001 ? (
-              <ReferenceLine
-                y={targetYtm}
-                stroke="var(--primary)"
-                strokeDasharray="3 4"
-                label={{
-                  value: t('目标 YTM'),
-                  position: 'insideBottomLeft',
-                  fill: 'var(--primary)',
-                  fontSize: 12,
-                }}
-              />
-            ) : null}
-            <Line
-              dataKey="ytm"
-              type="linear"
-              stroke="var(--color-ytm)"
-              strokeWidth={3}
-              dot={false}
-              activeDot={{
-                r: 6,
-                fill: 'var(--chart-1)',
-                stroke: 'var(--card)',
-                strokeWidth: 3,
-              }}
-            />
-            {hasPlateau ? (
-              <ReferenceDot
-                x={plateau.day}
-                y={plateau.ytm}
-                r={5}
-                fill="var(--card)"
-                stroke="var(--chart-1)"
-                strokeWidth={3}
-              />
-            ) : null}
-          </LineChart>
-        </ChartContainer>
-        {hasPlateau ? (
-          <p className="mt-2 flex flex-wrap items-center justify-center gap-2 text-sm font-semibold text-primary">
-            <span
-              aria-hidden="true"
-              className="h-2 w-2 rounded-full bg-primary"
-            />
-            <span>
-              {t('坐标（')}
-              {number(plateau.day)}
-              {t('天，')}
-              {percent(plateau.ytm, 3)}
-              {t('）· 最大 YTM')}
-            </span>
-          </p>
-        ) : null}
-        <p className="mt-1 text-center text-xs text-muted-foreground/75">
-          {t('点击曲线上的位置，即可采用对应的')}
-          {label}
-          {t('上限并重新计算')}
-        </p>
-        {targetControl}
-      </div>
-    </div>
-  );
-}
-
 const card =
-  'rounded-2xl border border-border bg-card shadow-[0_8px_30px_rgba(15,23,42,0.04)] dark:shadow-black/20';
+  'rounded-md border border-border bg-card shadow-none';
 
 function PlannerWorkspace({
   vault,
@@ -1517,12 +1033,12 @@ function PlannerWorkspace({
 
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <header className="border-b border-sky-200 bg-[#e6f2fc] text-slate-900 dark:border-slate-800 dark:bg-[#0b192d] dark:text-white">
+      <header className="workspace-header border-b border-border bg-card text-foreground">
         <div className="mx-auto max-w-[1540px] px-4 py-3 sm:px-6 lg:px-8">
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <fieldset
               aria-label={t('界面语言')}
-              className="inline-flex rounded-lg border border-sky-200 bg-white/50 p-0.5 dark:border-white/15 dark:bg-white/5"
+              className="inline-flex rounded-lg border border-border bg-white/50 p-0.5 dark:border-white/15 dark:bg-white/5"
             >
               {localeOptions.map((option) => (
                 <button
@@ -1533,7 +1049,7 @@ function PlannerWorkspace({
                   lang={option.value}
                   title={option.nativeLabel}
                   onClick={() => onLocaleChange(option.value)}
-                  className={`min-w-9 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 ${
+                  className={`min-w-9 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     locale === option.value
                       ? 'bg-primary text-primary-foreground shadow-sm'
                       : 'text-slate-600 hover:bg-white/70 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white'
@@ -1551,7 +1067,7 @@ function PlannerWorkspace({
               )}
               title={t(theme === 'dark' ? '切换至浅色模式' : '切换至深色模式')}
               onClick={onThemeToggle}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-white/50 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-white/70 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 dark:border-white/15 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-white/50 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-white/70 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/15 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
             >
               {theme === 'dark' ? (
                 <Sun className="size-3.5" />
@@ -1560,7 +1076,7 @@ function PlannerWorkspace({
               )}
               <span>{theme === 'dark' ? t('浅色') : t('深色')}</span>
             </button>
-                  <label className="flex items-center gap-2 rounded-lg border border-sky-200 bg-white/50 px-2.5 py-1 text-xs text-slate-600 dark:border-white/15 dark:bg-white/5 dark:text-slate-300">
+                  <label className="flex items-center gap-2 rounded-lg border border-border bg-white/50 px-2.5 py-1 text-xs text-slate-600 dark:border-white/15 dark:bg-white/5 dark:text-slate-300">
                     {t('统一金额单位')}
                     <NativeSelect
                       aria-label={t('统一金额单位')}
@@ -1571,7 +1087,7 @@ function PlannerWorkspace({
                       }
                       className="w-24"
                     >
-                      {(['元', '万元', '百万元', '亿元'] as const).map(
+                      {(['元', '万元', '百万元', '亿元', 'Billion'] as const).map(
                         (unit) => (
                           <NativeSelectOption value={unit} key={unit}>
                             {t(unit)}
@@ -1583,47 +1099,40 @@ function PlannerWorkspace({
           </div>
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="grid size-10 place-items-center rounded-xl bg-teal-400 text-[#0b2431]">
+              <div className="grid size-9 place-items-center rounded-sm border border-border bg-primary text-primary-foreground">
                 <Calculator className="size-5" />
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <h1 className="text-xl font-semibold tracking-tight">
+                  <h1 className="text-lg font-semibold tracking-tight">
                     {t('MMF 配置台')}
                   </h1>
-                  <Badge className="border border-sky-200 bg-white/50 text-sky-800 dark:border-white/10 dark:bg-white/10 dark:text-sky-100">
+                  <Badge className="border border-border bg-white/50 text-primary dark:border-white/10 dark:bg-white/10 dark:text-primary">
                     {t('本地草案')}
                   </Badge>
                 </div>
                 <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-300">
                   {t(
-                    workspaceView === 'versions' ? '保存多个工作版本，按时间查看和恢复' : workspaceView === 'institutions' ? '集中管理常用机构，供持仓与报价选择' : workspaceView === 'holdings'
-                      ? '集中维护持仓、机构归属与集中度上限'
+                    workspaceView === 'versions' ? t('保存多个工作版本，按时间查看和恢复') : workspaceView === 'institutions' ? t('集中管理常用机构，供持仓与报价选择') : workspaceView === 'holdings'
+                      ? t('集中维护持仓、机构归属与集中度上限')
                       : isRedemption
-                        ? '测算同比例赎回后的组合与机构敞口'
-                        : '在期限与机构集中度约束内，寻找最高收益配置',
+                        ? t('测算同比例赎回后的组合与机构敞口')
+                        : t('在期限与机构集中度约束内，寻找最高收益配置'),
                   )}
                 </p>
               </div>
             </div>
-            <div className="flex flex-wrap gap-2 text-xs text-slate-600 dark:text-slate-300">
-              <span className="rounded-full border border-sky-200 px-3 py-1.5 dark:border-white/10">
-                {t('WAM 利率敏感度 · WAL 最终到期')}
-              </span>
-              <span className="rounded-full border border-sky-200 px-3 py-1.5 dark:border-white/10">
-                {t('金额字段 = 绝对金额 · % 字段 = 占比')}
-              </span>
-            </div>
+
           </div>
         </div>
       </header>
 
       <nav
         aria-label={t('配置台工作区')}
-        className="border-b border-border bg-card"
+        className="workspace-nav border-b border-border bg-card"
       >
         <div className="mx-auto flex max-w-[1540px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
-          <div className="inline-flex rounded-xl bg-muted p-1">
+          <div className="inline-flex flex-wrap rounded-sm bg-muted/50 p-1">
             <Button variant="ghost" size="sm" aria-pressed={workspaceView === 'institutions'}
               className={workspaceView === 'institutions' ? 'bg-card text-foreground shadow-sm hover:bg-card' : 'text-muted-foreground hover:text-foreground'}
               onClick={() => setWorkspaceView('institutions')}>
@@ -1664,9 +1173,11 @@ function PlannerWorkspace({
               onClick={() => setWorkspaceView('planner')}>
               <Calculator />{t('配置测算')}
             </Button>
+            <TermStructureEntry />
+            <MathPrinciples portfolio={portfolio} banks={modelBanks} quotes={quotes} holdings={holdings} amountUnit={amountUnit} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={onLock}>锁定</Button>
+            <Button variant="outline" size="sm" onClick={onLock}>{t("锁定")}</Button>
             <Button variant="outline" size="sm" onClick={saveWorkspace}>{t('保存')}</Button>
             <Button variant={workspaceView === 'versions' ? 'default' : 'outline'} size="sm" aria-pressed={workspaceView === 'versions'} onClick={() => setWorkspaceView('versions')}>{t('版本管理')}</Button>
             <Button variant="outline" size="sm" onClick={() => setClearOpen(true)}><Trash2 />{t('清空所有')}</Button>
@@ -1674,13 +1185,13 @@ function PlannerWorkspace({
         </div>
       </nav>
       <div className="mx-auto flex max-w-[1540px] flex-wrap gap-3 px-5 py-2 text-sm text-muted-foreground">
-        <span>{savedAt ? `${t('上次保存')}：${new Date(savedAt).toLocaleString(locale)}` : t('尚未保存')} · {t('仅保存在当前浏览器，每次保存新增一个版本。')}</span>
+        <span>{savedAt ? `${t('上次保存')}：${new Date(savedAt).toLocaleString(locale)}` : t('尚未保存')} · {t('本机存档 · 每次保存新增版本')}</span>
         <output>{saveMessage}</output>
       </div>
       <AlertDialog open={Boolean(restoreOpen)} onOpenChange={open => { if (!open) setRestoreOpen(false); }}>
         <AlertDialogContent initialFocus={cancelFocus}>
-          <AlertDialogHeader><AlertDialogTitle>{t(restoreOpen === 'delete' ? '删除所选版本？' : '恢复所选版本？')}</AlertDialogTitle><AlertDialogDescription>{versions.find(version => version.id === restoreVersionId)?.name} · {t(restoreOpen === 'delete' ? '此版本将永久删除，无法撤销。当前工作内容和其他版本不受影响。' : '将用此版本替换当前全部内容，未保存的修改会丢失。')}</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel ref={cancelFocus}>{t('取消')}</AlertDialogCancel><AlertDialogAction variant={restoreOpen === 'delete' ? 'destructive' : 'default'} onClick={restoreOpen === 'delete' ? deleteSelectedVersion : restoreWorkspace}>{t(restoreOpen === 'delete' ? '确认删除' : '确认恢复')}</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader><AlertDialogTitle>{t(restoreOpen === 'delete' ? t('删除所选版本？') : t('恢复所选版本？'))}</AlertDialogTitle><AlertDialogDescription>{versions.find(version => version.id === restoreVersionId)?.name} · {t(restoreOpen === 'delete' ? t('此版本将永久删除，无法撤销。当前工作内容和其他版本不受影响。') : t('将用此版本替换当前全部内容，未保存的修改会丢失。'))}</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel ref={cancelFocus}>{t('取消')}</AlertDialogCancel><AlertDialogAction variant={restoreOpen === 'delete' ? 'destructive' : 'default'} onClick={restoreOpen === 'delete' ? deleteSelectedVersion : restoreWorkspace}>{t(restoreOpen === 'delete' ? t('确认删除') : t('确认恢复'))}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
       <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
@@ -1697,45 +1208,44 @@ function PlannerWorkspace({
       </AlertDialog>
 
       <div className="mx-auto max-w-[1540px] px-4 pt-5 sm:px-6 lg:px-8">
-        <fieldset className="flex flex-wrap items-center gap-2" aria-label="输入模式">
-          <legend className="mb-2 text-sm font-medium">输入模式</legend>
+        <fieldset className="flex flex-wrap items-center gap-2" aria-label={t("输入模式")}>
+          <legend className="mb-2 text-sm font-medium">{t("输入模式")}</legend>
           {(Object.keys(MODE_LABELS) as InputMode[]).map(mode => <Button key={mode} size="sm" variant={(portfolioInput.inputMode ?? 'holdings') === mode ? 'default' : 'outline'} aria-pressed={(portfolioInput.inputMode ?? 'holdings') === mode} onClick={() => switchInputMode(mode)}>{t(MODE_LABELS[mode])}</Button>)}
         </fieldset>
-        <p className="mt-3 text-xs text-muted-foreground">当前情况统一在“当前持仓”输入或汇总，“配置测算”同步展示。保存版本按当前模式分区。</p>
         <p className="mt-2 text-sm text-primary">{t(MODE_DESCRIPTIONS[portfolioInput.inputMode ?? 'holdings'])}</p>
       </div>
       <div
-        className={`mx-auto max-w-[1540px] gap-6 px-4 py-6 sm:px-6 lg:px-8 ${
+        className={`mx-auto max-w-[1540px] gap-4 px-4 py-4 sm:px-6 lg:px-8 ${
           workspaceView === 'planner'
             ? 'grid xl:grid-cols-[minmax(0,1.15fr)_minmax(560px,0.85fr)]'
             : 'block'
         }`}
       >
-        <div className="space-y-5">
-          {workspaceView === 'planner' && !isRedemption && <section className={`${card} overflow-hidden`}>
-            <div className="border-b border-border/60 bg-primary/5 px-5 py-5">
+        <div className="space-y-4">
+          {workspaceView === 'planner' && !isRedemption && !simpleMode && <section className={`${card} overflow-hidden`}>
+            <div className="border-b border-border/60 bg-muted/40 px-5 py-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="eyebrow">CASH BUFFER · {t('赎回压力')}</p>
                   <h2 className="mt-1 text-lg font-semibold">
-                    {t('先留出赎回的空间')}
+                    {t('现金压力测算')}
                   </h2>
                 </div>
                 <span
-                  className={`rounded-full px-3 py-1 text-sm font-medium ${stress.error ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary'}`}
+                  className={`rounded-sm px-3 py-1 text-sm font-medium ${stress.error ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary'}`}
                 >
                   {t(
                     stress.error
-                      ? '无法计算'
+                      ? t('无法计算')
                       : stress.remainingCash <= EPSILON
-                        ? '现金恰好用尽'
-                        : '现金可覆盖',
+                        ? t('现金恰好用尽')
+                        : t('现金可覆盖'),
                   )}
                 </span>
               </div>
               <p className="mt-2 text-sm text-muted-foreground">
                 {t(
-                  '压力比例以当前 AUM 为基数；仅动用现有现金，机构敞口按不减少保守测算。',
+                  '压力基数：当前 AUM；仅使用现金，机构敞口保持不变。',
                 )}
               </p>
             </div>
@@ -1758,7 +1268,7 @@ function PlannerWorkspace({
               </div>
               <p className="text-sm text-muted-foreground">
                 {t(
-                  '比例与金额自动换算，以最后编辑的一项为准。调整 AUM 时，该项保持不变。',
+                  '金额／比例联动，以最后输入项为准。',
                 )}
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
@@ -1793,12 +1303,12 @@ function PlannerWorkspace({
               {stress.error ? (
                 <div
                   role="alert"
-                  className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+                  className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
                 >
                   {t(stress.error)}
                 </div>
-              ) : simpleMode ? <p className="text-sm text-muted-foreground">现金缓冲可覆盖本次压力赎回。简易模式不检查机构及集团集中度。</p> : (
-                <div className="overflow-x-auto rounded-xl border border-border/70">
+              ) : simpleMode ? <p className="text-sm text-muted-foreground">{t("现金缓冲可覆盖本次压力赎回。简易模式不检查机构及集团集中度。")}</p> : (
+                <div className="overflow-x-auto rounded-md border border-border/70">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -1890,12 +1400,12 @@ function PlannerWorkspace({
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {t(
                       isRedemption
-                        ? '第一版按当前组合所有资产同比例赎回'
-                        : '将新增资金配置到今日可投产品',
+                        ? t('第一版按当前组合所有资产同比例赎回')
+                        : t('将新增资金配置到今日可投产品'),
                     )}
                   </p>
                 </div>
-                <fieldset className="grid w-full grid-cols-2 rounded-xl bg-muted p-1 sm:w-auto">
+                <fieldset className="grid w-full grid-cols-2 rounded-md bg-muted p-1 sm:w-auto">
                   <legend className="sr-only">{t('选择今日资金方向')}</legend>
                   {(
                     [
@@ -1915,7 +1425,7 @@ function PlannerWorkspace({
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
-                      {t(mode === 'redemption' ? '净赎回（暂不可用）' : label)}
+                      {t(mode === 'redemption' ? t('净赎回（暂不可用）') : label)}
                     </button>
                   ))}
                 </fieldset>
@@ -2003,19 +1513,19 @@ function PlannerWorkspace({
                 {isRedemption ? (
                   <>
                     {t(
-                      '所有金额都填写绝对金额并使用同一单位。交易后 AUM = 当前 AUM − 净赎回金额。当前版本假设所有资产及机构敞口按相同比例缩减，因此 YTM、WAM、WAL 与机构占比保持不变；已有超限也不会被修复。',
+                      '同比例赎回：AUM 减少，收益、期限及集中度比例不变。',
                     )}
                   </>
                 ) : (
                   <>
                     {t(
-                      '当前 AUM、YTM、WAM、WAL 和现金缓冲统一在当前持仓页面输入或汇总，此处只展示。请在这里填写新增资金、赎回压力和期限上限。',
+                      '当前组合数据来自持仓页。',
                     )}
                   </>
                 )}
               </p>
               <ConstraintNotes items={['term', 'input']} />
-              <Button variant="ghost" className="mx-5 mb-3" onClick={() => setWorkspaceView('holdings')}>
+              <Button variant="outline" className="mx-5 mb-3" onClick={() => setWorkspaceView('holdings')}>
                 {t('编辑持仓')}
               </Button>
             </section>
@@ -2041,9 +1551,8 @@ function PlannerWorkspace({
                 </div>
                 <div className="space-y-4 p-5">
                   {summaryFields}
-                  <p className="text-sm text-muted-foreground">{t(MODE_DESCRIPTIONS[portfolioInput.inputMode ?? 'holdings'])}</p>
-                  <p className="text-sm text-muted-foreground">{simpleMode ? '现金缓冲金额与比例自动换算，比例以当前 AUM 为基数。以最后编辑的一项为准；AUM 改变时，该项保持不变。' : '现金缓冲金额来自标记为现金的持仓，比例为现金金额 ÷ 当前 AUM。请在明细中调整现金持仓。'}</p>
-                  {!simpleMode && <p className="text-sm text-muted-foreground">持仓合计：{number(holdingTotal)} {t(amountUnit)}。{holdingTotalError ? t(holdingTotalError) : 'AUM 已对账。'}</p>}
+                  <p className="text-sm text-muted-foreground">{simpleMode ? t('现金金额／占 AUM 比例联动，以最后输入项为准。') : t('现金缓冲按现金持仓汇总。')}</p>
+                  {!simpleMode && <p className="text-sm text-muted-foreground">{t("持仓合计：")}{number(holdingTotal)} {t(amountUnit)}。{holdingTotalError ? t(holdingTotalError) : t('AUM 已对账。')}</p>}
                 </div>
               </section>
               {!simpleMode && <section className={card}>
@@ -2063,7 +1572,7 @@ function PlannerWorkspace({
                 </div>
                 {metrics.errors.length > 0 ? (
                   <p role="alert" className="px-5 pb-3 text-sm text-destructive">
-                    {t(aggregateMode ? '请补齐持仓收益率' : '请补齐持仓收益率与有效期限')}：{metrics.errors.join('、')}
+                    {t(aggregateMode ? t('请补齐持仓收益率') : t('请补齐持仓收益率与有效期限'))}：{metrics.errors.join('、')}
                   </p>
                 ) : null}
                 {holdingTotalError ? (
@@ -2355,7 +1864,7 @@ function PlannerWorkspace({
                 </Table>
                 <p className="border-t border-border/60 px-5 py-3 text-xs leading-5 text-muted-foreground">
                   {t(
-                    '持仓金额合计必须等于当前 AUM。选择“无机构归属 / 不计入本工具统计”仅表示该行不占用下方单一机构额度，须由合规确认；普通机构持仓不得归入此项。窄屏可左右滑动查看完整字段。',
+                    '“无机构归属”不计集中度，仅用于经确认的排除项。',
                   )}
                   {isRedemption
                     ? t(' 当前显示的是同比例情景，不代表赎回优先级。')
@@ -2368,7 +1877,7 @@ function PlannerWorkspace({
                   <div>
                     <p className="eyebrow">{t('02 · 机构集中度')}</p>
                     <h2 className="mt-1 text-lg font-semibold">
-                      {t(simpleMode ? '报价机构' : '机构集中度汇总')}
+                      {t(simpleMode ? t('报价机构') : t('机构集中度汇总'))}
                     </h2>
                   </div>
                   <Badge variant="outline">
@@ -2402,9 +1911,9 @@ function PlannerWorkspace({
                       >
                         <NativeSelectOption value="">
                           {t(
-                            !bankLibrary.length ? '请先到机构管理新增机构' : availableBankTemplates.length
-                              ? '选择后直接加入'
-                              : '已保存机构均已加入',
+                            !bankLibrary.length ? t('请先到机构管理新增机构') : availableBankTemplates.length
+                              ? t('选择后直接加入')
+                              : t('已保存机构均已加入'),
                           )}
                         </NativeSelectOption>
                         {availableBankTemplates.map((bank) => (
@@ -2445,9 +1954,9 @@ function PlannerWorkspace({
                         </span>
                       </TableHead>
                       <TableHead className="text-right">
-                        {t(isRedemption ? '赎回后占比（不变）' : '当前占比')}
+                        {t(isRedemption ? t('赎回后占比（不变）') : t('当前占比'))}
                         <span className="block text-[11px] font-normal text-muted-foreground/75">
-                          {t(isRedemption ? '与当前占比相同' : '占当前 AUM')}
+                          {t(isRedemption ? t('与当前占比相同') : t('占当前 AUM'))}
                         </span>
                       </TableHead>
                       <TableHead className="text-right">
@@ -2457,14 +1966,14 @@ function PlannerWorkspace({
                         </span>
                       </TableHead>
                       <TableHead className="text-right">
-                        {t(isRedemption ? '赎回后持仓' : '压力后额度上限')}［4］
+                        {t(isRedemption ? t('赎回后持仓') : t('压力后额度上限'))}［4］
                         <span className="block text-[11px] font-normal text-muted-foreground/75">
                           {t('绝对金额/')}
                           {t(amountUnit)}
                         </span>
                       </TableHead>
                       <TableHead className="text-right">
-                        {t(isRedemption ? '预计同比例赎回' : '本次最多可新增')}
+                        {t(isRedemption ? t('预计同比例赎回') : t('本次最多可新增'))}
                         <span className="block text-[11px] font-normal text-muted-foreground/75">
                           {t('绝对金额/')}
                           {t(amountUnit)}
@@ -2688,7 +2197,7 @@ function PlannerWorkspace({
                     {isRedemption ? (
                       <>
                         {t(
-                          '赎回后持仓 = 当前持仓 ×（交易后 AUM ÷ 当前 AUM）；同比例赎回金额 = 当前持仓 − 赎回后持仓。机构占比不会因同比例赎回改变。',
+                          '剩余持仓 = 当前持仓 ×（1 − 赎回比例）。',
                         )}
                       </>
                     ) : (
@@ -2742,17 +2251,17 @@ function PlannerWorkspace({
               <Button onClick={saveWorkspace}>{t('保存当前为新版本')}</Button>
             </div>
             <div className="space-y-4 p-5">
-              <p className="text-sm text-muted-foreground">{t('默认以保存时间命名，可以重命名。恢复不会删除任何已保存版本，清空工作区也不会删除版本。')}</p>
+              <p className="text-sm text-muted-foreground">{t('按模式归档，可重命名。清空工作区不删除存档。')}</p>
               {!versions.length && <p className="py-6 text-center text-muted-foreground">{t('还没有保存的版本。')}</p>}
-              {groupVersionsByMode(versions).map(section => <section key={section.mode} className="space-y-3 rounded-xl border border-border p-4">
-                <h3 className="font-semibold">{t(section.mode === 'simple' ? '简易模式' : section.mode === 'aggregate' ? '汇总期限模式' : '持仓模式')} <span className="text-muted-foreground">({section.entries.length})</span></h3>
-                {!section.entries.length && <p className="text-sm text-muted-foreground">此模式暂无保存版本。</p>}
+              {groupVersionsByMode(versions).map(section => <section key={section.mode} className="space-y-3 rounded-md border border-border p-4">
+                <h3 className="font-semibold">{t(section.mode === 'simple' ? t('简易模式') : section.mode === 'aggregate' ? t('汇总期限模式') : t('持仓模式'))} <span className="text-muted-foreground">({section.entries.length})</span></h3>
+                {!section.entries.length && <p className="text-sm text-muted-foreground">{t("此模式暂无保存版本。")}</p>}
                 {section.entries.map(version => {
                 const saved = decodeWorkspace(version.data);
-                return <div key={version.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-4">
+                return <div key={version.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border p-4">
                   <div className="min-w-0">
                     {renamingVersionId === version.id ? <div className="flex gap-2"><Input aria-label={t('版本名称')} value={versionNameDraft} onChange={event => setVersionNameDraft(event.target.value)} /><Button size="sm" disabled={!versionNameDraft.trim()} onClick={() => saveVersionName(version.id)}>{t('保存名称')}</Button><Button size="sm" variant="ghost" onClick={() => setRenamingVersionId(null)}>{t('取消')}</Button></div> : <h3 className="font-semibold">{version.name}</h3>}
-                    <p className="mt-1 text-sm text-muted-foreground">{new Date(version.savedAt).toLocaleString()} · {t(saved.portfolioInput.inputMode === 'simple' ? '简易模式' : saved.portfolioInput.inputMode === 'aggregate' ? '汇总期限模式' : '持仓模式')} · {saved.quotes.length} {t('条报价')}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">{new Date(version.savedAt).toLocaleString()} · {t(saved.portfolioInput.inputMode === 'simple' ? t('简易模式') : saved.portfolioInput.inputMode === 'aggregate' ? t('汇总期限模式') : t('持仓模式'))} · {saved.quotes.length} {t('条报价')}</p>
                   </div>
                   <div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={() => { setRenamingVersionId(version.id); setVersionNameDraft(version.name); }}>{t('重命名')}</Button><Button variant="outline" size="sm" onClick={() => { setRestoreVersionId(version.id); setRestoreOpen('restore'); }}>{t('恢复此版本')}</Button><Button variant="ghost" size="sm" className="text-destructive" aria-label={`${t('删除版本')} ${version.name}`} onClick={() => { setRestoreVersionId(version.id); setRestoreOpen('delete'); }}><Trash2 />{t('删除')}</Button></div>
                 </div>;
@@ -2761,7 +2270,7 @@ function PlannerWorkspace({
           </section>}
 
           {workspaceView === 'institutions' && <section className={card}>
-            <div className="section-head"><div><p className="eyebrow">{t('04 · 机构管理')}</p><h2 className="mt-1 text-lg font-semibold">机构与集团</h2></div><Badge variant="secondary">{t('仅保存在本机')}</Badge></div>
+            <div className="section-head"><div><p className="eyebrow">{t('04 · 机构管理')}</p><h2 className="mt-1 text-lg font-semibold">{t("机构与集团")}</h2></div><Badge variant="secondary">{t('仅保存在本机')}</Badge></div>
             <div className="p-5">
               <InstitutionManager institutions={bankLibrary} groups={groups}
                 onSaveInstitution={saveInstitution} onDeleteInstitution={deleteLibraryBank}
@@ -2770,11 +2279,11 @@ function PlannerWorkspace({
             </div>
           </section>}
 
-          {workspaceView === 'holdings' && !simpleMode && <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
-            <h2 className="text-lg font-semibold">集团集中度汇总［3］</h2>
-            <p className="text-sm text-muted-foreground">与机构管理同步。集团可新增额度由集团内所有机构共同使用。</p>
-            {concentrationBuckets(modelBanks).filter(bucket => bucket.kind === 'group').map(group => <div key={group.name} className="flex flex-wrap justify-between gap-2 border-b border-border py-2 text-sm"><span>{group.name}</span><span>当前敞口 {number(group.currentExposure)} {amountUnit} · 上限 {percent(group.limitPct)} · 可新增 {number(Math.max(0, (isRedemption ? postAum : stress.stressedAum) * (group.limitPct / 100) - postTradeExistingExposure(portfolio, group.currentExposure)))} {amountUnit}</span></div>)}
-            {!modelBanks.some(bank => bank.groupName) && <p className="text-sm text-muted-foreground">请在机构管理中填写集团归属。</p>}
+          {workspaceView === 'holdings' && !simpleMode && <section className="rounded-md border border-border bg-card p-5 space-y-3">
+            <h2 className="text-lg font-semibold">{t("集团集中度汇总［3］")}</h2>
+            <p className="text-sm text-muted-foreground">{t("集团内机构共享额度。")}</p>
+            {concentrationBuckets(modelBanks).filter(bucket => bucket.kind === 'group').map(group => <div key={group.name} className="flex flex-wrap justify-between gap-2 border-b border-border py-2 text-sm"><span>{group.name}</span><span>{t("当前敞口")}{number(group.currentExposure)} {amountUnit}{t("· 上限")}{percent(group.limitPct)}{t("· 可新增")}{number(Math.max(0, (isRedemption ? postAum : stress.stressedAum) * (group.limitPct / 100) - postTradeExistingExposure(portfolio, group.currentExposure)))} {t(amountUnit)}</span></div>)}
+            {!modelBanks.some(bank => bank.groupName) && <p className="text-sm text-muted-foreground">{t("请在机构管理中填写集团归属。")}</p>}
             <ConstraintNotes items={['group']} />
           </section>}
 
@@ -2784,13 +2293,13 @@ function PlannerWorkspace({
                 <div className="section-head">
                   <div>
                     <p className="eyebrow">
-                      02 · {t(isRedemption ? '赎回规则' : '市场报价')}
+                      02 · {t(isRedemption ? t('赎回规则') : t('市场报价'))}
                     </p>
                     <h2 className="mt-1 text-lg font-semibold">
                       {t(
                         isRedemption
-                          ? '按现有组合同比例赎回'
-                          : '今日可投产品与报价',
+                          ? t('按现有组合同比例赎回')
+                          : t('今日可投产品与报价'),
                       )}
                     </h2>
                   </div>
@@ -2828,13 +2337,13 @@ function PlannerWorkspace({
                 </div>
                 {isRedemption ? (
                   <div className="p-5">
-                    <div className="rounded-xl border border-primary/35 bg-accent/60 p-4">
+                    <div className="rounded-md border border-primary/35 bg-muted/40 p-4">
                       <p className="text-sm font-semibold text-foreground">
                         {t('当前版本不选择具体赎回产品')}
                       </p>
                       <p className="mt-1 text-sm leading-6 text-foreground/75">
                         {t(
-                          '系统按“净赎回金额 ÷ 当前 AUM”的比例，同步缩减现有组合中的所有资产和机构敞口。因此 YTM、WAM、WAL 与机构占比保持不变。',
+                          '按赎回比例缩减全部持仓，收益、期限及集中度比例不变。',
                         )}
                       </p>
                       <p className="mt-2 text-xs leading-5 text-muted-foreground">
@@ -2848,7 +2357,7 @@ function PlannerWorkspace({
                   <>
                     <div className="space-y-3 border-b border-border/60 p-5">
                       <Button variant="outline" size="sm" onClick={() => setQuoteImportOpen(open => !open)}>{t('粘贴报价表')}</Button>
-                      {quoteImportOpen && <div className="grid gap-3 rounded-xl border border-border p-4">
+                      {quoteImportOpen && <div className="grid gap-3 rounded-md border border-border p-4">
                         <label className="grid gap-2 text-sm">{t('报价表内容')}<textarea className="min-h-40 rounded-lg border border-border bg-card p-3 font-mono text-sm" value={quoteImportText} onChange={event => setQuoteImportText(event.target.value)} /></label>
                         <p className="text-sm text-muted-foreground">{t('导入将替换今日报价，矩阵显示本次导入机构；保留当前组合参数、持仓和机构库。空白不生成报价，额度为无限制。')}</p>
                         {quoteImportPreview.data ? <p>{quoteImportPreview.data.banks.length} {t('家银行')} · {quoteImportPreview.data.quotes.length} {t('条报价')}</p> : quoteImportText && <p className="text-sm text-destructive">{quoteImportPreview.error}</p>}
@@ -2858,12 +2367,12 @@ function PlannerWorkspace({
                         <Button size="sm" variant={quoteView === 'matrix' ? 'default' : 'outline'} aria-pressed={quoteView === 'matrix'} onClick={() => setQuoteView('matrix')}>{t('银行 × 期限')}</Button>
                         <Button size="sm" variant={quoteView === 'details' ? 'default' : 'outline'} aria-pressed={quoteView === 'details'} onClick={() => setQuoteView('details')}>{t('明细与额度')}</Button>
                       </fieldset>
-                      <p className="text-sm text-muted-foreground">{t('在矩阵中直接填写利率（%），留空表示无报价，0 表示零利率。额度默认无限制，可在“明细与额度”中修改。两种视图使用同一份报价。')}</p>
+                      <p className="text-sm text-muted-foreground">{t('利率单位 %；空白无报价，0 为零利率。额度在明细中设置。')}</p>
                     </div>
                     {quoteView === 'matrix' ? <>
                       <Table>
                         <TableHeader><TableRow>
-                          <TableHead className="sticky left-0 z-10 min-w-44 bg-card">{t('机构')}</TableHead>
+                          <TableHead className="sticky left-0 z-10 min-w-44 bg-card text-center">{t('机构')}</TableHead>
                           {matrixColumns.map(column => <TableHead key={column.key} className="min-w-28 text-center">
                             <span>{column.label}</span><span className="block text-xs font-normal text-muted-foreground">{column.wam === column.wal ? `${column.wal} ${t('天')}` : `WAM ${column.wam} / WAL ${column.wal}`}</span>
                           </TableHead>)}
@@ -2884,7 +2393,6 @@ function PlannerWorkspace({
                             </TableCell>;
                           })}
                         </TableRow>)}
-                        {!banks.length && <TableRow><TableCell colSpan={matrixColumns.length + 1} className="p-6 text-center"><Button variant="outline" onClick={() => setWorkspaceView('holdings')}>{t('请先选择机构')}<ArrowRight /></Button></TableCell></TableRow>}
                         </TableBody>
                       </Table>
                       <p className="border-t border-border/60 px-5 py-3 text-sm text-muted-foreground">{t('月份期限按表头天数测算（1M = 30天）；可在明细中调整实际 WAM/WAL。非标准期限自动追加列，同机构同期限的多条报价分别保留。')}</p>
@@ -2904,8 +2412,7 @@ function PlannerWorkspace({
                             {t('利率/%')}
                           </TableHead>
                           <TableHead className="text-right">
-                            {t('本次可投上限')}［设置］
-                            <span className="block text-[11px] font-normal text-muted-foreground/75">
+                            {t('本次可投上限')}{t("［设置］")}<span className="block text-[11px] font-normal text-muted-foreground/75">
                               {t('绝对金额/')}
                               {t(amountUnit)}
                             </span>
@@ -3035,7 +2542,7 @@ function PlannerWorkspace({
                     </Table>
                     <p className="border-t border-border/60 px-5 py-3 text-xs leading-5 text-muted-foreground">
                       {t(
-                        '报价额度留空表示无限制，填 0 表示不可投。WAL 填剩余最终到期天数。WAM 留空时自动按 WAL 处理；仅在已确认浮息工具可按下一次利率重定价计量时，填写更短的 WAM 天数。报价额度与 AUM 使用同一绝对金额单位。',
+                        '额度：空白不限，0 不可投。WAL 为最终到期天数；WAM 默认同 WAL，符合重定价计量条件的浮息工具可单填。',
                       )}
                     </p>
                     </>}
@@ -3058,8 +2565,8 @@ function PlannerWorkspace({
                     <AlertTitle>
                       {t(
                         hasHoldingsWorkspaceViolation
-                          ? '当前持仓或机构集中度数据需修正，完成后才能继续计算。'
-                          : '存在超出监管硬上限或无效输入，请先修正上方提示。',
+                          ? t('当前持仓或机构集中度数据需修正，完成后才能继续计算。')
+                          : t('存在超出监管硬上限或无效输入，请先修正上方提示。'),
                       )}
                     </AlertTitle>
                     {hasHoldingsWorkspaceViolation ? (
@@ -3085,18 +2592,19 @@ function PlannerWorkspace({
                   <ShieldCheck className="size-4 text-primary" />
                   {t(
                     isRedemption
-                      ? '按现有组合同比例扣减；不使用市场报价'
-                      : '连续金额优化；未配置资金按零期限、零收益现金处理',
+                      ? t('按现有组合同比例扣减；不使用市场报价')
+                      : t('连续金额优化；未配置资金按零期限、零收益现金处理'),
                   )}
                 </div>
                 <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
+                  {!isRedemption && <DeepReviewButton portfolio={portfolio} banks={modelBanks} quotes={quotes} result={result} dirty={dirty} />}
                   <Button
                     size="lg"
                     onClick={calculate}
                     disabled={hasRegulatoryLimitViolation}
                     className="w-full bg-primary px-5 text-primary-foreground hover:bg-primary/90 sm:w-auto"
                   >
-                    {t(isRedemption ? '测算赎回后组合' : '计算最优配置')}{' '}
+                    {t(isRedemption ? t('测算赎回后组合') : t('计算最优配置'))}{' '}
                     <ArrowRight />
                   </Button>
                 </div>
@@ -3107,18 +2615,18 @@ function PlannerWorkspace({
 
         {workspaceView === 'planner' ? (
           <aside className="xl:self-start">
-            <section className="overflow-hidden rounded-2xl border border-border bg-card shadow-[0_14px_40px_rgba(15,23,42,0.08)] dark:shadow-black/25">
+            <section className="overflow-hidden rounded-md border border-border bg-card shadow-none">
               <div className="flex items-start justify-between border-b border-border/60 px-5 py-4">
                 <div>
                   <p className="eyebrow">{t('决策面板')}</p>
                   <h2 className="mt-1 text-lg font-semibold">
-                    {t(isRedemption ? '赎回后组合快照' : '收益前沿与推荐配置')}
+                    {t(isRedemption ? t('赎回后组合快照') : t('收益前沿与推荐配置'))}
                   </h2>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {t(
                       isRedemption
-                        ? '按现有组合同比例缩减；结果以最近一次测算为准'
-                        : '前沿随输入实时更新；配置结果以最近一次计算为准',
+                        ? t('按现有组合同比例缩减；结果以最近一次测算为准')
+                        : t('前沿随输入实时更新；配置结果以最近一次计算为准'),
                     )}
                   </p>
                 </div>
@@ -3131,7 +2639,7 @@ function PlannerWorkspace({
                 ) : result.ok ? (
                   <Badge className="bg-emerald-100 text-emerald-800">
                     <Check />
-                    {t('约束通过')}
+                    {t('已建模约束通过')}
                   </Badge>
                 ) : (
                   <Badge variant="destructive">{t('输入需调整')}</Badge>
@@ -3140,14 +2648,14 @@ function PlannerWorkspace({
 
               {isRedemption ? (
                 <div className="border-b border-border/60 p-5">
-                  <div className="rounded-xl border border-primary/35 bg-accent/60 p-4">
+                  <div className="rounded-md border border-primary/35 bg-muted/40 p-4">
                     <p className="eyebrow">{t('赎回影响')}</p>
-                    <h3 className="mt-1 text-base font-semibold">
+                    <h3 className="mt-1 text-sm font-semibold">
                       {t('同比例赎回不改变期限与收益指标')}
                     </h3>
                     <p className="mt-2 text-sm leading-6 text-foreground/75">
                       {t(
-                        '本模式没有新的买入配置，因此不展示收益前沿或目标 YTM 反推。交易后结果仅由赎回金额和当前组合快照决定。',
+                        '净赎回不适用收益前沿及目标反推。',
                       )}
                     </p>
                   </div>
@@ -3157,13 +2665,13 @@ function PlannerWorkspace({
                   <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
                     <div>
                       <p className="eyebrow">{t('收益前沿')}</p>
-                      <h3 className="mt-1 flex items-center gap-2 text-base font-semibold">
+                      <h3 className="mt-1 flex items-center gap-2 text-sm font-semibold">
                         <TrendingUp className="size-4 text-primary" />
                         {t('多一天期限，换来多少收益')}
                       </h3>
                     </div>
                     <div
-                      className="inline-flex rounded-xl bg-muted p-1"
+                      className="inline-flex flex-wrap rounded-sm bg-muted/50 p-1"
                       role="tablist"
                       aria-label={t('选择期限指标')}
                     >
@@ -3219,10 +2727,15 @@ function PlannerWorkspace({
                           </div>
                         </Alert>
                       </div>
+                    ) : frontiers.source?.portfolio !== portfolio || frontiers.source?.banks !== modelBanks || frontiers.source?.quotes !== quotes ? (
+                      <output className="flex min-h-80 items-center justify-center gap-2 p-5 text-sm text-muted-foreground" aria-live="polite" aria-busy="true">
+                        <span className="size-4 animate-spin rounded-full border-2 border-primary/20 border-t-primary motion-reduce:animate-none" aria-hidden="true" />
+                        {t('计算中…')}
+                      </output>
                     ) : (
                       <FrontierPanel
                         mode={frontierMode}
-                        points={hasHoldingsWorkspaceViolation || frontiers.source?.portfolio !== portfolio || frontiers.source?.banks !== modelBanks || frontiers.source?.quotes !== quotes ? [] : frontiers[frontierMode]}
+                        points={frontiers[frontierMode]}
                         currentLimit={
                           frontierMode === 'wam'
                             ? portfolio.maxWam
@@ -3246,10 +2759,10 @@ function PlannerWorkspace({
 
               <div className="border-b border-border/60 px-5 py-4">
                 <p className="eyebrow">
-                  {t(isRedemption ? '测算结果' : '最优解')}
+                  {t(isRedemption ? t('测算结果') : t('最优解'))}
                 </p>
-                <h3 className="mt-1 text-base font-semibold">
-                  {t(isRedemption ? '同比例赎回结果' : '推荐配置')}
+                <h3 className="mt-1 text-sm font-semibold">
+                  {t(isRedemption ? t('同比例赎回结果') : t('推荐配置'))}
                 </h3>
               </div>
 
@@ -3260,8 +2773,8 @@ function PlannerWorkspace({
                     <AlertTitle>
                       {t(
                         isRedemption
-                          ? '赎回测算已暂时隐藏。请先修正标红字段，再重新测算。'
-                          : '推荐配置已暂时隐藏。请先修正标红字段，再重新计算。',
+                          ? t('赎回测算已暂时隐藏。请先修正标红字段，再重新测算。')
+                          : t('推荐配置已暂时隐藏。请先修正标红字段，再重新计算。'),
                       )}
                     </AlertTitle>
                   </Alert>
@@ -3275,7 +2788,7 @@ function PlannerWorkspace({
                 >
                   {result.tradeMode === 'redemption' ? (
                     <div className="px-5 pt-5">
-                      <div className="flex items-center justify-between gap-4 rounded-xl border border-primary/35 bg-accent/60 px-4 py-3">
+                      <div className="flex items-center justify-between gap-4 rounded-md border border-primary/35 bg-muted/40 px-4 py-3">
                         <div>
                           <p className="text-xs font-medium text-muted-foreground">
                             {t('本次赎回比例')}
@@ -3476,13 +2989,13 @@ function PlannerWorkspace({
                     </>
                   )}
 
-                  {simpleMode ? <p className="border-t border-border/60 p-5 text-sm text-muted-foreground">{t('简易模式已校验现金压力，未校验机构集中度。')}</p> : <div className="border-t border-border/60">
+                  {simpleMode ? <p className="border-t border-border/60 p-5 text-sm text-muted-foreground">{t('简易模式不校验现金压力与机构集中度。')}</p> : <div className="border-t border-border/60">
                     <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
                       <Landmark className="size-4 text-primary" />{' '}
                       {t(
                         result.tradeMode === 'redemption'
-                          ? '机构同比例赎回明细'
-                          : '交易后机构占比',
+                          ? t('机构同比例赎回明细')
+                          : t('交易后机构占比'),
                       )}
                     </h3>
                     <div className="space-y-4 px-5 pb-5">
