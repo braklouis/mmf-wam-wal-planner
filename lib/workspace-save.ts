@@ -30,7 +30,11 @@ export function decodeWorkspace(raw: string): WorkspaceSnapshot {
       (v.groups !== undefined && !validGroups(v.groups)) ||
       !object(v.portfolioInput) || !fields(v.portfolioInput, ['aum', 'ytm', 'wam', 'wal', 'transactionAmount'], 'number') ||
       !['subscription', 'redemption'].includes(v.portfolioInput.tradeMode) ||
-      ![undefined, 'simple', 'holdings'].includes(v.portfolioInput.inputMode) ||
+      ![undefined, 'simple', 'holdings', 'aggregate'].includes(v.portfolioInput.inputMode) ||
+      !(v.portfolioInput.simpleInputs === undefined || object(v.portfolioInput.simpleInputs) && fields(v.portfolioInput.simpleInputs, ['aum', 'ytm', 'wam', 'wal', 'cashBufferAmount'], 'number') && (v.portfolioInput.simpleInputs.cashBufferPct === null || typeof v.portfolioInput.simpleInputs.cashBufferPct === 'number')) ||
+      !(v.portfolioInput.summaryOverrides === undefined || object(v.portfolioInput.summaryOverrides) && Object.entries(v.portfolioInput.summaryOverrides).every(([key, value]) => ['aum', 'ytm', 'wam', 'wal', 'cashBufferAmount'].includes(key) && typeof value === 'number')) ||
+      !(v.portfolioInput.cashBufferPct == null || typeof v.portfolioInput.cashBufferPct === 'number') ||
+      !['aggregateWam', 'aggregateWal'].every(key => v.portfolioInput[key] === undefined || typeof v.portfolioInput[key] === 'number') ||
       !['maxWam', 'maxWal'].every(key => v.portfolioInput[key] === null || typeof v.portfolioInput[key] === 'number') ||
       !rows(v.banks, ['id', 'name'], ['limitPct']) || !rows(v.holdings, ['id', 'name'], ['amount']) ||
       !rows(v.quotes, ['id', 'name', 'bankId'], ['rate', 'walDays']) || !v.quotes.every((q: Quote) => (q.cap === null || typeof q.cap === 'number') && (q.wamDays === null || typeof q.wamDays === 'number')) ||

@@ -1,14 +1,14 @@
 import type { Holding } from './planner.ts';
 
-export function holdingMetrics(holdings: Holding[]) {
+export function holdingMetrics(holdings: Holding[], aggregateTerms = false) {
   const aum = holdings.reduce((sum, h) => sum + h.amount, 0);
   const errors: string[] = [];
   const totals = { ytm: 0, wam: 0, wal: 0 };
   for (const h of holdings) {
     if (h.amount === 0) continue;
     const ytm = h.ytm;
-    const wal = h.isCash ? 0 : h.walDays;
-    const wam = h.isCash ? 0 : (h.wamDays ?? wal);
+    const wal = aggregateTerms || h.isCash ? 0 : h.walDays;
+    const wam = aggregateTerms || h.isCash ? 0 : (h.wamDays ?? wal);
     if (ytm == null || !Number.isFinite(ytm) || wal == null || !Number.isFinite(wal) || wal < 0 || wam == null || !Number.isFinite(wam) || wam < 0 || wam > wal) {
       errors.push(h.name);
       continue;

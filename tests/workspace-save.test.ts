@@ -37,3 +37,29 @@ void test('versions retain independently created empty groups and reject duplica
   assert.deepEqual(decodeWorkspace(encodeWorkspace(value)), value);
   assert.throws(() => decodeWorkspace(encodeWorkspace({ ...value, groups: [...value.groups, { id: 'other', name: 'empty group', limitPct: 25 }] })));
 });
+void test('aggregate-term mode preserves manual portfolio terms and optional holding terms', () => {
+  const value: WorkspaceSnapshot = { ...snapshot, portfolioInput: { ...snapshot.portfolioInput, inputMode: 'aggregate', aggregateWam: 41.64, aggregateWal: 61.1 }, holdings: [{ id: 'h', name: 'Asset', bankId: null, amount: 100, ytm: 2 }] };
+  assert.deepEqual(decodeWorkspace(encodeWorkspace(value)), value);
+});
+
+void test('summary overrides round-trip and reject malformed fields', () => {
+  const saved={...snapshot,portfolioInput:{...snapshot.portfolioInput,summaryOverrides:{aum:100,ytm:NaN,wam:30,wal:50,cashBufferAmount:10}}};
+  assert.deepEqual(decodeWorkspace(encodeWorkspace(saved)),saved);
+  const bad=JSON.parse(encodeWorkspace(saved));
+  bad.portfolioInput.summaryOverrides.aum='100';
+  assert.throws(()=>decodeWorkspace(JSON.stringify(bad)));
+});
+void test('cash buffer percentage basis survives a saved version', () => {
+  const saved = { ...snapshot, portfolioInput: { ...snapshot.portfolioInput, cashBufferPct: 12.5 } };
+  assert.equal(decodeWorkspace(encodeWorkspace(saved)).portfolioInput.cashBufferPct, 12.5);
+  const bad = JSON.parse(encodeWorkspace(saved));
+  bad.portfolioInput.cashBufferPct = '12.5';
+  assert.throws(() => decodeWorkspace(JSON.stringify(bad)));
+});
+void test('separate simple inputs and aggregate terms survive saving together', () => {
+  const saved = { ...snapshot, portfolioInput: { ...snapshot.portfolioInput, inputMode: 'holdings' as const, aggregateWam: 18, aggregateWal: 36,
+    simpleInputs: { aum:200, ytm:3, wam:12, wal:24, cashBufferAmount:10, cashBufferPct:5 } } };
+  assert.deepEqual(decodeWorkspace(encodeWorkspace(saved)).portfolioInput, saved.portfolioInput);
+  const bad=JSON.parse(encodeWorkspace(saved)); bad.portfolioInput.simpleInputs.aum='200';
+  assert.throws(()=>decodeWorkspace(JSON.stringify(bad)));
+});

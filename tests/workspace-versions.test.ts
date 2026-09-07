@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { appendVersion, readVersions, renameVersion, deleteVersion, VERSIONS_STORAGE_KEY } from '../lib/workspace-versions.ts';
+import { groupVersionsByMode, appendVersion, readVersions, renameVersion, deleteVersion, VERSIONS_STORAGE_KEY } from '../lib/workspace-versions.ts';
 import { WORKSPACE_STORAGE_KEY, encodeWorkspace, decodeWorkspace, type WorkspaceSnapshot } from '../lib/workspace-save.ts';
 const snapshot: WorkspaceSnapshot = {
   version: 1, savedAt: '2026-09-07T09:00:00.000Z', portfolioInput: { tradeMode: 'subscription', inputMode: 'simple', aum: NaN, ytm: 0, wam: 41.64, wal: 61.1, transactionAmount: 0, maxWam: null, maxWal: null },
@@ -54,4 +54,14 @@ void test('failed deletion writes preserve the original version list', () => {
   const before = s.getItem(VERSIONS_STORAGE_KEY);
   assert.throws(() => deleteVersion({ ...s, setItem: () => { throw new Error('unavailable'); } }, 'a'));
   assert.equal(s.getItem(VERSIONS_STORAGE_KEY), before);
+});
+
+void test('mode sections preserve independent histories and legacy holdings versions', () => {
+  const s=storage();
+  for (const mode of ['simple','holdings','aggregate',undefined] as const) appendVersion(s,{...snapshot,portfolioInput:{...snapshot.portfolioInput,inputMode:mode,summaryOverrides:{aum:123,cashBufferAmount:5}}},mode??'legacy');
+  const sections=groupVersionsByMode(readVersions(s));
+  assert.deepEqual(sections.map(section=>section.entries.length),[1,2,1]);
+  assert.equal(decodeWorkspace(sections[2].entries[0].data).portfolioInput.summaryOverrides?.aum,123);
+  deleteVersion(s,'simple');
+  assert.deepEqual(groupVersionsByMode(readVersions(s)).map(section=>section.entries.length),[0,2,1]);
 });

@@ -1,6 +1,9 @@
 'use client';
 
-import { appendVersion, readVersions, renameVersion, deleteVersion, type SavedVersion } from '@/lib/workspace-versions';
+import { canEditSummary, MODE_DESCRIPTIONS, cashBufferPercentage, resolvePortfolio, editSummary, switchPortfolioMode, MODE_LABELS, SUMMARY_FIELDS, type InputMode, type SummaryField } from '@/lib/portfolio-input';
+import { VaultGate } from '@/components/vault-gate';
+import { type EncryptedVault } from '@/lib/encrypted-vault';
+import { groupVersionsByMode, appendVersion, readVersions, renameVersion, deleteVersion, type SavedVersion } from '@/lib/workspace-versions';
 import { decodeWorkspace, type WorkspaceSnapshot } from '@/lib/workspace-save';
 import { parseQuoteTable } from '@/lib/quote-import';
 import { quoteColumns, quoteColumnKey, updateExistingMatrixRate, type QuoteColumn } from '@/lib/quote-matrix';
@@ -31,6 +34,7 @@ import {
   Sun,
   TrendingUp,
   Trash2,
+  Wallet,
 } from 'lucide-react';
 import {
   CartesianGrid,
@@ -608,11 +612,15 @@ const card =
   'rounded-2xl border border-border bg-card shadow-[0_8px_30px_rgba(15,23,42,0.04)] dark:shadow-black/20';
 
 function PlannerWorkspace({
+  vault,
+  onLock,
   locale,
   theme,
   onLocaleChange,
   onThemeToggle,
 }: {
+  vault: EncryptedVault;
+  onLock: () => void;
   locale: Locale;
   theme: Theme;
   onLocaleChange: (locale: Locale) => void;
@@ -636,20 +644,9 @@ function PlannerWorkspace({
   const [banks, setBanks] = useState<Bank[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const simpleMode = portfolioInput.inputMode === 'simple';
-  const metrics = useMemo(() => holdingMetrics(holdings), [holdings]);
-  const portfolio = useMemo(
-    () => simpleMode ? { ...portfolioInput, redemptionStressPct: 0, redemptionStressAmount: null, cashBufferAmount: 0 } : ({
-      ...portfolioInput,
-      aum: metrics.aum,
-      ytm: metrics.ytm,
-      wam: metrics.wam,
-      wal: metrics.wal,
-      cashBufferAmount: holdings
-        .filter((h) => h.isCash)
-        .reduce((sum, h) => sum + h.amount, 0),
-    }),
-    [portfolioInput, holdings, metrics, simpleMode],
-  );
+  const aggregateMode = portfolioInput.inputMode === 'aggregate';
+  const metrics = useMemo(() => holdingMetrics(holdings, aggregateMode), [holdings, aggregateMode]);
+  const portfolio = useMemo(() => resolvePortfolio(portfolioInput, holdings), [portfolioInput, holdings]);
   const stress = redemptionStress(portfolio);
   const modelBanks = useMemo(
     () => aggregateInstitutionExposures(banks, simpleMode ? [] : holdings),
@@ -801,9 +798,9 @@ function PlannerWorkspace({
     let parsed: BankTemplate[] | null = null;
     let parsedGroups: InstitutionGroup[] = [];
     try {
-      const saved = window.localStorage.getItem(BANK_LIBRARY_STORAGE_KEY);
+      const saved = vault.getItem(BANK_LIBRARY_STORAGE_KEY);
       parsed = saved ? parseBankLibrary(saved) : null;
-      const groupData = window.localStorage.getItem(GROUP_STORAGE_KEY);
+      const groupData = vault.getItem(GROUP_STORAGE_KEY);
       const decoded = groupData ? JSON.parse(groupData) : null;
       parsedGroups = validGroups(decoded) ? decoded : groupsFromInstitutions(parsed ?? []);
     } catch {
@@ -818,7 +815,7 @@ function PlannerWorkspace({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [vault]);
 
   useEffect(() => {
     if (!bankLibraryLoaded) return;
@@ -835,17 +832,14 @@ function PlannerWorkspace({
         setTargetYtmMessage(null);
       });
     }
-    try {
-      window.localStorage.setItem(
-        BANK_LIBRARY_STORAGE_KEY,
-        JSON.stringify(library),
-      );
-      window.localStorage.setItem(GROUP_STORAGE_KEY, JSON.stringify(groups));
-    } catch {
-      // The planner remains usable when browser storage is unavailable.
-    }
+    void vault.transaction(storage => {
+      storage.setItem(BANK_LIBRARY_STORAGE_KEY, JSON.stringify(library));
+      storage.setItem(GROUP_STORAGE_KEY, JSON.stringify(groups));
+    }).catch(error => {
+      if (!cancelled) setSaveMessage(`机构库加密保存失败：${error instanceof Error ? error.message : '请重试。'}`);
+    });
     return () => { cancelled = true; };
-  }, [bankLibrary, bankLibraryLoaded, banks, groups]);
+  }, [bankLibrary, bankLibraryLoaded, banks, groups, vault]);
 
   useEffect(() => {
     const context = (document as Document & { modelContext?: WebModelContext })
@@ -974,6 +968,7 @@ function PlannerWorkspace({
   );
   const currentWamInputError =
     currentWamValueError ??
+    (portfolio.wam > portfolio.wal + EPSILON ? '当前组合 WAM 不能大于 WAL。' : null) ??
     (isRedemption &&
     !maxWamError &&
     portfolio.wam >
@@ -1002,8 +997,8 @@ function PlannerWorkspace({
   );
   const holdingErrors = useMemo(
     () => simpleMode ? [] : [...holdingValidationErrors(portfolio, banks, holdings),
-      ...metrics.errors.map(name => `${t('请补齐持仓收益率与有效期限')}：${name}`)],
-    [portfolio, banks, holdings, metrics, t, simpleMode],
+      ...metrics.errors.map(name => `${t(aggregateMode ? '请补齐持仓收益率' : '请补齐持仓收益率与有效期限')}：${name}`)],
+    [portfolio, banks, holdings, metrics, t, simpleMode, aggregateMode],
   );
   const holdingNameInvalidIds = new Set(
     holdings
@@ -1225,7 +1220,9 @@ function PlannerWorkspace({
     key: K,
     value: Portfolio[K],
   ) => {
-    setPortfolio((old) => ({ ...old, [key]: value }));
+    setPortfolio((old) => (SUMMARY_FIELDS.includes(key as SummaryField) || key === 'cashBufferPct')
+      ? editSummary(old, key as SummaryField | 'cashBufferPct', value as number)
+      : { ...old, [key]: value });
     setDirty(true);
     clearTargetOutcome();
   };
@@ -1301,10 +1298,10 @@ function PlannerWorkspace({
     setDirty(true);
     clearTargetOutcome();
   };
-  const saveWorkspace = () => {
+  const saveWorkspace = async () => {
     try {
       const snapshot: WorkspaceSnapshot = { version: 1, savedAt: new Date().toISOString(), portfolioInput, banks, holdings, quotes, bankLibrary, groups, amountUnit, workspaceView, quoteView, quoteImportText, quoteImportOpen, quoteImportBankIds, manualMetrics: manualMetrics.current, frontierMode, targetYtm, storedResult, dirty, locale, theme, newBankName, newBankLimitPct, editingBankId, targetYtmError, targetYtmMessage };
-      const next = appendVersion(window.localStorage, snapshot, id('saved-version'));
+      const next = await vault.transaction(storage => appendVersion(storage, snapshot, id('saved-version')));
       setVersions(next);
       setSavedAt(snapshot.savedAt);
       setSaveMessage(t('已保存为新版本，之前的版本已保留。'));
@@ -1314,7 +1311,7 @@ function PlannerWorkspace({
   };
   const restoreWorkspace = () => {
     try {
-      const latest = readVersions(window.localStorage);
+      const latest = readVersions(vault);
       const entry = latest.find(version => version.id === restoreVersionId);
       if (!entry) { setSaveMessage(t('找不到此版本，请重新选择。')); setRestoreOpen(false); return; }
       const saved = decodeWorkspace(entry.data);
@@ -1325,7 +1322,7 @@ function PlannerWorkspace({
       setBankLibrary(applyGroupRegistry(saved.bankLibrary, restoredGroups)); setAmountUnit(saved.amountUnit); setWorkspaceView(saved.workspaceView);
       setQuoteView(saved.quoteView); setQuoteImportText(saved.quoteImportText); setQuoteImportOpen(saved.quoteImportOpen); setQuoteImportBankIds(saved.quoteImportBankIds);
       manualMetrics.current = saved.manualMetrics; setFrontierMode(saved.frontierMode); setTargetYtm(saved.targetYtm);
-      setResult(saved.storedResult); setDirty(saved.dirty); setNewBankName(saved.newBankName); setNewBankLimitPct(saved.newBankLimitPct); setEditingBankId(saved.editingBankId);
+      setResult(calculatePlan(resolvePortfolio(saved.portfolioInput, saved.holdings), aggregateInstitutionExposures(saved.banks, saved.portfolioInput.inputMode === 'simple' ? [] : saved.holdings), saved.quotes, saved.holdings)); setDirty(false); setNewBankName(saved.newBankName); setNewBankLimitPct(saved.newBankLimitPct); setEditingBankId(saved.editingBankId);
       setTargetYtmError(saved.targetYtmError); setTargetYtmMessage(saved.targetYtmMessage);
       setFrontiers({ wam: [], wal: [] }); frontierCacheRef.current = null; planCacheRef.current = null; optimiseSubscriptionCacheRef.current = null;
       if (frontierTimerRef.current) clearTimeout(frontierTimerRef.current);
@@ -1333,19 +1330,19 @@ function PlannerWorkspace({
       setSavedAt(saved.savedAt); setRestoreOpen(false); setSaveMessage(t('已恢复保存的全部内容')); setBankLibraryMessage('');
     } catch { setRestoreOpen(false); setSaveMessage(t('恢复失败：存档损坏或版本不兼容，当前内容未更改。')); }
   };
-  const deleteSelectedVersion = () => {
+  const deleteSelectedVersion = async () => {
     try {
       if (!restoreVersionId) return;
-      const next = deleteVersion(window.localStorage, restoreVersionId);
+      const next = await vault.transaction(storage => deleteVersion(storage, restoreVersionId));
       setVersions(next); setSavedAt(next[0]?.savedAt ?? null);
       if (renamingVersionId === restoreVersionId) setRenamingVersionId(null);
       setRestoreVersionId(null); setRestoreOpen(false);
       setSaveMessage(t('版本已删除，当前工作内容保持不变。'));
     } catch { setRestoreOpen(false); setSaveMessage(t('删除失败，存档未更改，请重试。')); }
   };
-  const saveVersionName = (versionId: string) => {
+  const saveVersionName = async (versionId: string) => {
     try {
-      setVersions(renameVersion(window.localStorage, versionId, versionNameDraft));
+      setVersions(await vault.transaction(storage => renameVersion(storage, versionId, versionNameDraft)));
       setRenamingVersionId(null); setSaveMessage(t('版本名称已更新。'));
     } catch { setSaveMessage(t('重命名失败，请检查名称或本机存储。')); }
   };
@@ -1353,10 +1350,10 @@ function PlannerWorkspace({
     let cancelled = false;
     let entries: SavedVersion[] = [];
     let message = '';
-    try { entries = readVersions(window.localStorage); } catch { message = '版本列表读取失败，原存档未更改。'; }
+    try { entries = readVersions(vault); } catch { message = '版本列表读取失败，原存档未更改。'; }
     queueMicrotask(() => { if (!cancelled) { setVersions(entries); setSavedAt(entries[0]?.savedAt ?? null); if (message) setSaveMessage(t(message)); } });
     return () => { cancelled = true; };
-  }, [t]);
+  }, [t, vault]);
   const importQuoteTable = () => {
     const data = quoteImportPreview.data;
     if (!data) return;
@@ -1455,14 +1452,22 @@ function PlannerWorkspace({
     setBankLibraryMessage('');
     setClearOpen(false);
   };
-  const switchInputMode = (simple: boolean) => {
-    if (simple === simpleMode) return;
-    if (!simple) manualMetrics.current = { aum: portfolio.aum, ytm: portfolio.ytm, wam: portfolio.wam, wal: portfolio.wal };
-    setPortfolio(old => ({ ...old, inputMode: simple ? 'simple' : 'holdings',
-      ...(simple ? manualMetrics.current ?? { aum: portfolio.aum, ytm: portfolio.ytm, wam: portfolio.wam, wal: portfolio.wal } : {}) }));
+  const switchInputMode = (mode: InputMode) => {
+    if (mode === (portfolioInput.inputMode ?? 'holdings')) return;
+    setPortfolio(old => switchPortfolioMode(old, mode, holdings));
     setDirty(true);
     clearTargetOutcome();
   };
+  const summaryFields = <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    {SUMMARY_FIELDS.map(key => <NumberField key={key}
+      readOnly={!canEditSummary(portfolioInput.inputMode, key)}
+      label={t({ aum: '当前 AUM', ytm: '当前加权 YTM', wam: '当前 WAM', wal: '当前 WAL', cashBufferAmount: '现金缓冲金额' }[key])}
+      value={portfolio[key] ?? 0} suffix={key === 'aum' || key === 'cashBufferAmount' ? t(amountUnit) : key === 'ytm' ? '%' : t('天')}
+      error={key === 'aum' ? aumInputError : key === 'wam' ? currentWamInputError : key === 'wal' ? currentWalInputError : undefined}
+      onChange={value => updatePortfolio(key, value ?? Number.NaN)} />)}
+    <NumberField readOnly={!simpleMode} label={t('现金缓冲比例')} value={cashBufferPercentage(portfolio)} suffix="%" min={0} max={100}
+      onChange={value => updatePortfolio('cashBufferPct', value ?? NaN)} />
+  </div>;
   const selectFrontierDay = (mode: FrontierMode, day: number) => {
     if (isRedemption || holdingErrors.length) return;
     const nextPortfolio = {
@@ -1555,6 +1560,26 @@ function PlannerWorkspace({
               )}
               <span>{theme === 'dark' ? t('浅色') : t('深色')}</span>
             </button>
+                  <label className="flex items-center gap-2 rounded-lg border border-sky-200 bg-white/50 px-2.5 py-1 text-xs text-slate-600 dark:border-white/15 dark:bg-white/5 dark:text-slate-300">
+                    {t('统一金额单位')}
+                    <NativeSelect
+                      aria-label={t('统一金额单位')}
+                      size="sm"
+                      value={amountUnit}
+                      onChange={(event) =>
+                        setAmountUnit(event.target.value as AmountUnit)
+                      }
+                      className="w-24"
+                    >
+                      {(['元', '万元', '百万元', '亿元'] as const).map(
+                        (unit) => (
+                          <NativeSelectOption value={unit} key={unit}>
+                            {t(unit)}
+                          </NativeSelectOption>
+                        ),
+                      )}
+                    </NativeSelect>
+                  </label>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -1599,6 +1624,11 @@ function PlannerWorkspace({
       >
         <div className="mx-auto flex max-w-[1540px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
           <div className="inline-flex rounded-xl bg-muted p-1">
+            <Button variant="ghost" size="sm" aria-pressed={workspaceView === 'institutions'}
+              className={workspaceView === 'institutions' ? 'bg-card text-foreground shadow-sm hover:bg-card' : 'text-muted-foreground hover:text-foreground'}
+              onClick={() => setWorkspaceView('institutions')}>
+              <Landmark />{t('机构管理')}
+            </Button>
             <Button
               type="button"
               variant="ghost"
@@ -1611,7 +1641,7 @@ function PlannerWorkspace({
               }
               onClick={() => setWorkspaceView('holdings')}
             >
-              <Landmark />
+              <Wallet />
               {t('当前持仓')}
             </Button>
             <Button
@@ -1634,13 +1664,9 @@ function PlannerWorkspace({
               onClick={() => setWorkspaceView('planner')}>
               <Calculator />{t('配置测算')}
             </Button>
-            <Button variant="ghost" size="sm" aria-pressed={workspaceView === 'institutions'}
-              className={workspaceView === 'institutions' ? 'bg-card text-foreground shadow-sm hover:bg-card' : 'text-muted-foreground hover:text-foreground'}
-              onClick={() => setWorkspaceView('institutions')}>
-              <Landmark />{t('机构管理')}
-            </Button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" onClick={onLock}>锁定</Button>
             <Button variant="outline" size="sm" onClick={saveWorkspace}>{t('保存')}</Button>
             <Button variant={workspaceView === 'versions' ? 'default' : 'outline'} size="sm" aria-pressed={workspaceView === 'versions'} onClick={() => setWorkspaceView('versions')}>{t('版本管理')}</Button>
             <Button variant="outline" size="sm" onClick={() => setClearOpen(true)}><Trash2 />{t('清空所有')}</Button>
@@ -1670,6 +1696,14 @@ function PlannerWorkspace({
         </AlertDialogContent>
       </AlertDialog>
 
+      <div className="mx-auto max-w-[1540px] px-4 pt-5 sm:px-6 lg:px-8">
+        <fieldset className="flex flex-wrap items-center gap-2" aria-label="输入模式">
+          <legend className="mb-2 text-sm font-medium">输入模式</legend>
+          {(Object.keys(MODE_LABELS) as InputMode[]).map(mode => <Button key={mode} size="sm" variant={(portfolioInput.inputMode ?? 'holdings') === mode ? 'default' : 'outline'} aria-pressed={(portfolioInput.inputMode ?? 'holdings') === mode} onClick={() => switchInputMode(mode)}>{t(MODE_LABELS[mode])}</Button>)}
+        </fieldset>
+        <p className="mt-3 text-xs text-muted-foreground">当前情况统一在“当前持仓”输入或汇总，“配置测算”同步展示。保存版本按当前模式分区。</p>
+        <p className="mt-2 text-sm text-primary">{t(MODE_DESCRIPTIONS[portfolioInput.inputMode ?? 'holdings'])}</p>
+      </div>
       <div
         className={`mx-auto max-w-[1540px] gap-6 px-4 py-6 sm:px-6 lg:px-8 ${
           workspaceView === 'planner'
@@ -1678,7 +1712,7 @@ function PlannerWorkspace({
         }`}
       >
         <div className="space-y-5">
-          {workspaceView === 'planner' && !simpleMode && <section className={`${card} overflow-hidden`}>
+          {workspaceView === 'planner' && !isRedemption && <section className={`${card} overflow-hidden`}>
             <div className="border-b border-border/60 bg-primary/5 px-5 py-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -1729,9 +1763,9 @@ function PlannerWorkspace({
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <Metric
-                  label={t('实际现金缓冲')}
+                  label={t('现金缓冲金额')}
                   value={`${number(stress.cash)} ${t(amountUnit)}`}
-                  detail={`${percent(portfolio.aum > 0 ? (stress.cash / portfolio.aum) * 100 : 0)} · ${t('来自现金持仓，参考目标 5%')}`}
+                  detail={`${percent(cashBufferPercentage(portfolio))} · ${t(simpleMode ? '手动输入，参考目标 5%' : '来自现金持仓，参考目标 5%')}`}
                 />
                 <Metric
                   label={t('压力赎回金额')}
@@ -1763,7 +1797,7 @@ function PlannerWorkspace({
                 >
                   {t(stress.error)}
                 </div>
-              ) : (
+              ) : simpleMode ? <p className="text-sm text-muted-foreground">现金缓冲可覆盖本次压力赎回。简易模式不检查机构及集团集中度。</p> : (
                 <div className="overflow-x-auto rounded-xl border border-border/70">
                   <Table>
                     <TableHeader>
@@ -1781,7 +1815,7 @@ function PlannerWorkspace({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {modelBanks.map((bank) => {
+                      {(simpleMode ? [] : modelBanks).map((bank) => {
                         const cap = (stress.stressedAum * bank.limitPct) / 100;
                         return (
                           <TableRow key={bank.id}>
@@ -1841,26 +1875,7 @@ function PlannerWorkspace({
                   </h2>
                 </div>
                 <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {t('统一金额单位')}
-                    <NativeSelect
-                      aria-label={t('统一金额单位')}
-                      size="sm"
-                      value={amountUnit}
-                      onChange={(event) =>
-                        setAmountUnit(event.target.value as AmountUnit)
-                      }
-                      className="w-24"
-                    >
-                      {(['元', '万元', '百万元', '亿元'] as const).map(
-                        (unit) => (
-                          <NativeSelectOption value={unit} key={unit}>
-                            {t(unit)}
-                          </NativeSelectOption>
-                        ),
-                      )}
-                    </NativeSelect>
-                  </label>
+
                   <Badge variant="outline">
                     {t('交易后 AUM')}
                     {number(postAum)} {t(amountUnit)}
@@ -1908,14 +1923,12 @@ function PlannerWorkspace({
               <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
                 <NumberField
                   label={t('当前 AUM（绝对金额）')}
-                  readOnly={!simpleMode}
+                  readOnly
                   value={portfolio.aum}
                   suffix={amountUnit}
                   min={0}
                   error={aumInputError}
-                  onChange={(value) =>
-                    updatePortfolio('aum', value ?? Number.NaN)
-                  }
+                  onChange={() => {}}
                 />
                 <NumberField
                   label={t(
@@ -1938,38 +1951,32 @@ function PlannerWorkspace({
                 />
                 <NumberField
                   label={t('当前加权 YTM')}
-                  readOnly={!simpleMode}
+                  readOnly
                   value={portfolio.ytm}
                   suffix="%"
-                  onChange={(value) =>
-                    updatePortfolio('ytm', value ?? Number.NaN)
-                  }
+                  onChange={() => {}}
                 />
                 <NumberField
                   label={t('当前 WAM')}
-                  readOnly={!simpleMode}
+                  readOnly
                   value={portfolio.wam}
                   suffix={t('天')}
                   min={0}
                   error={currentWamInputError}
                   warning={currentWamWarning}
                   warningTone="red"
-                  onChange={(value) =>
-                    updatePortfolio('wam', value ?? Number.NaN)
-                  }
+                  onChange={() => {}}
                 />
                 <NumberField
                   label={t('当前 WAL')}
-                  readOnly={!simpleMode}
+                  readOnly
                   value={portfolio.wal}
                   suffix={t('天')}
                   min={0}
                   error={currentWalInputError}
                   warning={currentWalWarning}
                   warningTone="red"
-                  onChange={(value) =>
-                    updatePortfolio('wal', value ?? Number.NaN)
-                  }
+                  onChange={() => {}}
                 />
                 <NumberField
                   label={`${t(isRedemption ? 'WAM 上限（合规检验）' : 'WAM 上限')}［1］`}
@@ -2002,14 +2009,14 @@ function PlannerWorkspace({
                 ) : (
                   <>
                     {t(
-                      simpleMode ? '简易模式：手动输入组合指标，不应用持仓对账、现金压力及机构集中度约束。期限上限和报价额度仍然有效。' : '当前 AUM、加权 YTM、WAM、WAL 自动汇总自持仓。请在持仓中编辑金额、收益率和剩余期限；这里只需填写新增资金与上限。',
+                      '当前 AUM、YTM、WAM、WAL 和现金缓冲统一在当前持仓页面输入或汇总，此处只展示。请在这里填写新增资金、赎回压力和期限上限。',
                     )}
                   </>
                 )}
               </p>
               <ConstraintNotes items={['term', 'input']} />
               <Button variant="ghost" className="mx-5 mb-3" onClick={() => setWorkspaceView('holdings')}>
-                {t(simpleMode ? '简易模式' : '编辑持仓')}
+                {t('编辑持仓')}
               </Button>
             </section>
           ) : workspaceView === 'holdings' ? (
@@ -2032,45 +2039,13 @@ function PlannerWorkspace({
                     <ArrowRight />
                   </Button>
                 </div>
-                <fieldset className="flex flex-wrap gap-2 px-5 pt-5" aria-label={t('输入模式')}>
-                  <Button variant={simpleMode ? 'outline' : 'default'} aria-pressed={!simpleMode} onClick={() => switchInputMode(false)}>{t('持仓模式')}</Button>
-                  <Button variant={simpleMode ? 'default' : 'outline'} aria-pressed={simpleMode} onClick={() => switchInputMode(true)}>{t('简易模式')}</Button>
-                </fieldset>
-                {simpleMode ? <div className="space-y-4 p-5">
-                  <p className="text-sm text-muted-foreground">{t('简易模式：手动输入组合指标，不应用持仓对账、现金压力及机构集中度约束。期限上限和报价额度仍然有效。')}</p>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    {(['aum', 'ytm', 'wam', 'wal'] as const).map(key => <NumberField key={key}
-                      label={t({ aum: '当前 AUM', ytm: '当前加权 YTM', wam: '当前 WAM', wal: '当前 WAL' }[key])}
-                      value={portfolio[key]} suffix={key === 'aum' ? t(amountUnit) : key === 'ytm' ? '%' : t('天')}
-                      onChange={value => updatePortfolio(key, value ?? Number.NaN)} />)}
-                  </div>
-                </div> : <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-4">
-                  <Metric
-                    label={t('当前 AUM')}
-                    value={`${number(portfolio.aum)} ${t(amountUnit)}`}
-                    detail={t('持仓金额需与此口径对账')}
-                  />
-                  <Metric
-                    label={t('持仓合计')}
-                    value={`${number(holdingTotal)} ${t(amountUnit)}`}
-                    detail={
-                      holdingTotalError ? t('尚未完成对账') : t('已与 AUM 对账')
-                    }
-                    accent={!holdingTotalError}
-                  />
-                  <Metric
-                    label={t('当前交易方向')}
-                    value={t(isRedemption ? '净赎回' : '净申购')}
-                    detail={t('交易方向在配置测算界面修改')}
-                  />
-                  <Metric
-                    label={t(isRedemption ? '净赎回金额' : '新增资金')}
-                    value={`${number(portfolio.transactionAmount)} ${t(amountUnit)}`}
-                    detail={t('用于预览交易后的机构集中度')}
-                  />
-                </div>}
+                <div className="space-y-4 p-5">
+                  {summaryFields}
+                  <p className="text-sm text-muted-foreground">{t(MODE_DESCRIPTIONS[portfolioInput.inputMode ?? 'holdings'])}</p>
+                  <p className="text-sm text-muted-foreground">{simpleMode ? '现金缓冲金额与比例自动换算，比例以当前 AUM 为基数。以最后编辑的一项为准；AUM 改变时，该项保持不变。' : '现金缓冲金额来自标记为现金的持仓，比例为现金金额 ÷ 当前 AUM。请在明细中调整现金持仓。'}</p>
+                  {!simpleMode && <p className="text-sm text-muted-foreground">持仓合计：{number(holdingTotal)} {t(amountUnit)}。{holdingTotalError ? t(holdingTotalError) : 'AUM 已对账。'}</p>}
+                </div>
               </section>
-
               {!simpleMode && <section className={card}>
                 <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 px-5 py-4">
                   <div>
@@ -2084,34 +2059,11 @@ function PlannerWorkspace({
                       )}
                     </p>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge
-                      variant={holdingErrors.length ? 'destructive' : 'outline'}
-                    >
-                      {t(
-                        holdingErrors.length
-                          ? `持仓数据需修正（${holdingErrors.length}）`
-                          : `已录入 ${number(holdingTotal)} / AUM ${number(portfolio.aum)} ${amountUnit}`,
-                      )}
-                    </Badge>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={addHolding}
-                    >
-                      <Plus />
-                      {t('新增持仓')}
-                    </Button>
-                  </div>
+                  {aggregateMode && <ConstraintNotes items={['term']} />}
                 </div>
-
-                <p className="px-5 py-3 text-xs text-muted-foreground">
-                  {t('持仓填写当前估值收益率和剩余天数；WAM 留空采用 WAL，现金期限为 0。')}
-                </p>
                 {metrics.errors.length > 0 ? (
                   <p role="alert" className="px-5 pb-3 text-sm text-destructive">
-                    {t('请补齐持仓收益率与有效期限')}：{metrics.errors.join('、')}
+                    {t(aggregateMode ? '请补齐持仓收益率' : '请补齐持仓收益率与有效期限')}：{metrics.errors.join('、')}
                   </p>
                 ) : null}
                 {holdingTotalError ? (
@@ -2138,6 +2090,17 @@ function PlannerWorkspace({
                   </div>
                 ) : null}
 
+                <div className="flex justify-end border-b border-border/60 px-5 py-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={addHolding}
+                    >
+                      <Plus />
+                      {t('新增持仓')}
+                    </Button>
+                </div>
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-muted/50 hover:bg-muted/50">
@@ -2155,8 +2118,8 @@ function PlannerWorkspace({
                         </span>
                       </TableHead>
                       <TableHead className="min-w-32">{t('持仓 YTM')} %</TableHead>
-                      <TableHead className="min-w-32">WAM / {t('天')}</TableHead>
-                      <TableHead className="min-w-32">WAL / {t('天')}</TableHead>
+                      {!aggregateMode && <><TableHead className="min-w-32">WAM / {t('天')}</TableHead>
+                      <TableHead className="min-w-32">WAL / {t('天')}</TableHead></>}
                       {isRedemption ? (
                         <>
                           <TableHead className="min-w-32 text-right">
@@ -2332,7 +2295,7 @@ function PlannerWorkspace({
                               ) : null}
                             </div>
                           </TableCell>
-                          {(['ytm', 'wamDays', 'walDays'] as const).map(field => (
+                          {(['ytm', 'wamDays', 'walDays'] as const).filter(field => !aggregateMode || field === 'ytm').map(field => (
                             <TableCell key={field} className="min-w-32">
                               <EditableNumberInput
                                 aria-label={`${holding.name} ${field === 'ytm' ? 'YTM' : field === 'wamDays' ? 'WAM' : 'WAL'}`}
@@ -2379,7 +2342,7 @@ function PlannerWorkspace({
                     {!holdings.length ? (
                       <TableRow>
                         <TableCell
-                          colSpan={isRedemption ? 9 : 7}
+                          colSpan={(isRedemption ? 9 : 7) - (aggregateMode ? 2 : 0)}
                           className="h-24 text-center text-sm text-muted-foreground"
                         >
                           {t(
@@ -2781,16 +2744,19 @@ function PlannerWorkspace({
             <div className="space-y-4 p-5">
               <p className="text-sm text-muted-foreground">{t('默认以保存时间命名，可以重命名。恢复不会删除任何已保存版本，清空工作区也不会删除版本。')}</p>
               {!versions.length && <p className="py-6 text-center text-muted-foreground">{t('还没有保存的版本。')}</p>}
-              {versions.map(version => {
+              {groupVersionsByMode(versions).map(section => <section key={section.mode} className="space-y-3 rounded-xl border border-border p-4">
+                <h3 className="font-semibold">{t(section.mode === 'simple' ? '简易模式' : section.mode === 'aggregate' ? '汇总期限模式' : '持仓模式')} <span className="text-muted-foreground">({section.entries.length})</span></h3>
+                {!section.entries.length && <p className="text-sm text-muted-foreground">此模式暂无保存版本。</p>}
+                {section.entries.map(version => {
                 const saved = decodeWorkspace(version.data);
                 return <div key={version.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-4">
                   <div className="min-w-0">
                     {renamingVersionId === version.id ? <div className="flex gap-2"><Input aria-label={t('版本名称')} value={versionNameDraft} onChange={event => setVersionNameDraft(event.target.value)} /><Button size="sm" disabled={!versionNameDraft.trim()} onClick={() => saveVersionName(version.id)}>{t('保存名称')}</Button><Button size="sm" variant="ghost" onClick={() => setRenamingVersionId(null)}>{t('取消')}</Button></div> : <h3 className="font-semibold">{version.name}</h3>}
-                    <p className="mt-1 text-sm text-muted-foreground">{new Date(version.savedAt).toLocaleString()} · {t(saved.portfolioInput.inputMode === 'simple' ? '简易模式' : '持仓模式')} · {saved.quotes.length} {t('条报价')}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">{new Date(version.savedAt).toLocaleString()} · {t(saved.portfolioInput.inputMode === 'simple' ? '简易模式' : saved.portfolioInput.inputMode === 'aggregate' ? '汇总期限模式' : '持仓模式')} · {saved.quotes.length} {t('条报价')}</p>
                   </div>
                   <div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={() => { setRenamingVersionId(version.id); setVersionNameDraft(version.name); }}>{t('重命名')}</Button><Button variant="outline" size="sm" onClick={() => { setRestoreVersionId(version.id); setRestoreOpen('restore'); }}>{t('恢复此版本')}</Button><Button variant="ghost" size="sm" className="text-destructive" aria-label={`${t('删除版本')} ${version.name}`} onClick={() => { setRestoreVersionId(version.id); setRestoreOpen('delete'); }}><Trash2 />{t('删除')}</Button></div>
                 </div>;
-              })}
+              })}</section>)}
             </div>
           </section>}
 
@@ -2807,7 +2773,7 @@ function PlannerWorkspace({
           {workspaceView === 'holdings' && !simpleMode && <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
             <h2 className="text-lg font-semibold">集团集中度汇总［3］</h2>
             <p className="text-sm text-muted-foreground">与机构管理同步。集团可新增额度由集团内所有机构共同使用。</p>
-            {concentrationBuckets(modelBanks).filter(bucket => bucket.kind === 'group').map(group => <div key={group.name} className="flex flex-wrap justify-between gap-2 border-b border-border py-2 text-sm"><span>{group.name}</span><span>当前敞口 {number(group.currentExposure)} {amountUnit} · 上限 {percent(group.limitPct)} · 可新增 {number(Math.max(0, stress.stressedAum * (group.limitPct / 100) - group.currentExposure))} {amountUnit}</span></div>)}
+            {concentrationBuckets(modelBanks).filter(bucket => bucket.kind === 'group').map(group => <div key={group.name} className="flex flex-wrap justify-between gap-2 border-b border-border py-2 text-sm"><span>{group.name}</span><span>当前敞口 {number(group.currentExposure)} {amountUnit} · 上限 {percent(group.limitPct)} · 可新增 {number(Math.max(0, (isRedemption ? postAum : stress.stressedAum) * (group.limitPct / 100) - postTradeExistingExposure(portfolio, group.currentExposure)))} {amountUnit}</span></div>)}
             {!modelBanks.some(bank => bank.groupName) && <p className="text-sm text-muted-foreground">请在机构管理中填写集团归属。</p>}
             <ConstraintNotes items={['group']} />
           </section>}
@@ -3510,7 +3476,7 @@ function PlannerWorkspace({
                     </>
                   )}
 
-                  {simpleMode ? <p className="border-t border-border/60 p-5 text-sm text-muted-foreground">{t('简易模式结果未校验机构集中度及现金压力。')}</p> : <div className="border-t border-border/60">
+                  {simpleMode ? <p className="border-t border-border/60 p-5 text-sm text-muted-foreground">{t('简易模式已校验现金压力，未校验机构集中度。')}</p> : <div className="border-t border-border/60">
                     <h3 className="flex items-center gap-2 px-5 py-3 text-sm font-semibold">
                       <Landmark className="size-4 text-primary" />{' '}
                       {t(
@@ -3717,12 +3683,14 @@ export default function Home() {
 
   return (
     <I18nProvider locale={locale}>
-      <PlannerWorkspace
+      <VaultGate>{(vault, lock) => <PlannerWorkspace
+        vault={vault}
+        onLock={lock}
         locale={locale}
         theme={theme}
         onLocaleChange={changeLocale}
         onThemeToggle={toggleTheme}
-      />
+      />}</VaultGate>
     </I18nProvider>
   );
 }

@@ -47,3 +47,8 @@ export function deleteVersion(storage: StorageAccess, id: string): SavedVersion[
   storage.setItem(VERSIONS_STORAGE_KEY, JSON.stringify({ version: 1, entries: next }));
   return next;
 }
+
+export const VERSION_MODES = ['simple', 'holdings', 'aggregate'] as const;
+export function groupVersionsByMode(versions: SavedVersion[]) {
+  return VERSION_MODES.map(mode => ({ mode, entries: versions.filter(version => (decodeWorkspace(version.data).portfolioInput.inputMode ?? 'holdings') === mode) }));
+}

@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { calculatePlan, optimiseSubscription, buildFrontier, solveTargetYtm, describeBindingConstraints, type Portfolio, type Quote } from '../lib/planner.ts';
 
-const portfolio: Portfolio = { inputMode: 'simple', tradeMode: 'subscription', aum: 100, ytm: 2, wam: 10, wal: 10, transactionAmount: 50, maxWam: 60, maxWal: 120, redemptionStressPct: 90, cashBufferAmount: 0 };
+const portfolio: Portfolio = { inputMode: 'simple', tradeMode: 'subscription', aum: 100, ytm: 2, wam: 10, wal: 10, transactionAmount: 50, maxWam: 60, maxWal: 120, redemptionStressPct: 5, cashBufferAmount: 10 };
 const banks = [{ id: 'a', templateId: null, name: 'A', limitPct: 10, currentExposure: 100 }];
 const quote: Quote = { id: 'q', name: 'Quote', bankId: 'a', wamDays: null, walDays: 30, rate: 5, cap: null };
 
-void test('simple mode uses manual metrics and ignores holdings, concentration and cash stress', () => {
+void test('simple mode uses manual metrics and ignores holdings and concentration while retaining cash stress', () => {
   const result = calculatePlan(portfolio, banks, [quote], []);
   assert.equal(result.ok, true);
   if (!result.ok || result.tradeMode !== 'subscription') return;
@@ -44,4 +44,12 @@ void test('frontier and reverse target search support simple mode and unlimited 
   const reverse = solveTargetYtm('wam', 3, portfolio, banks, [quote]);
   assert.ok(reverse.ok);
   if (reverse.ok) assert.ok(reverse.result.postYtm >= 3 - 1e-8);
+});
+
+void test('simple mode enforces cash buffer in optimisation, frontier and reverse search', () => {
+  const invalid = { ...portfolio, redemptionStressPct: 15 };
+  assert.equal(optimiseSubscription(invalid, banks, [quote]).ok, false);
+  assert.deepEqual(buildFrontier('wam', invalid, banks, [quote]), []);
+  assert.equal(solveTargetYtm('wam', 3, invalid, banks, [quote]).ok, false);
+  assert.ok(optimiseSubscription({ ...invalid, cashBufferAmount: 20 }, banks, [quote]).ok);
 });

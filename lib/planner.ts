@@ -3,7 +3,11 @@ export type TradeMode = 'subscription' | 'redemption';
 export type WorkspaceView = 'planner' | 'holdings' | 'quotes' | 'institutions' | 'versions';
 
 export type Portfolio = {
-  inputMode?: 'holdings' | 'simple';
+  inputMode?: 'holdings' | 'simple' | 'aggregate';
+  simpleInputs?: { aum: number; ytm: number; wam: number; wal: number; cashBufferAmount: number; cashBufferPct: number | null };
+  summaryOverrides?: Partial<Pick<Portfolio, 'aum' | 'ytm' | 'wam' | 'wal' | 'cashBufferAmount'>>;
+  aggregateWam?: number;
+  aggregateWal?: number;
   tradeMode: TradeMode;
   aum: number;
   ytm: number;
@@ -15,6 +19,7 @@ export type Portfolio = {
   redemptionStressPct?: number;
   redemptionStressAmount?: number | null;
   cashBufferAmount?: number;
+  cashBufferPct?: number | null;
 };
 
 export type Bank = ConcentrationMembership & {
@@ -737,7 +742,6 @@ export function optimiseSubscription(
 ): SubscriptionModelResult {
   const simple = portfolio.inputMode === 'simple';
   if (simple) {
-    portfolio = { ...portfolio, redemptionStressPct: 0, redemptionStressAmount: null, cashBufferAmount: 0 };
     banks = banks.map(bank => ({ ...bank, currentExposure: 0 }));
   }
   const errors: string[] = [];
@@ -778,6 +782,9 @@ export function optimiseSubscription(
   );
   if (currentWamError) errors.push(`当前 ${currentWamError}`);
   if (currentWalError) errors.push(`当前 ${currentWalError}`);
+  if (Number.isFinite(portfolio.wam) && Number.isFinite(portfolio.wal) && portfolio.wam > portfolio.wal + EPSILON) {
+    errors.push('当前组合 WAM 不能大于 WAL。');
+  }
   if (maxWamError) errors.push(`上限输入错误：${maxWamError}`);
   if (maxWalError) errors.push(`上限输入错误：${maxWalError}`);
 
@@ -1053,7 +1060,7 @@ export function calculateProRataRedemption(
   banks: ModelBank[],
   holdings: Holding[],
 ): ModelResult {
-  const errors: string[] = [];
+  const errors: string[] = holdingValidationErrors(portfolio, banks, holdings);
   const postAum = postAumOf(portfolio);
 
   if (!Number.isFinite(portfolio.aum) || portfolio.aum <= 0) {
@@ -1101,6 +1108,9 @@ export function calculateProRataRedemption(
   );
   if (currentWamError) errors.push(`当前 ${currentWamError}`);
   if (currentWalError) errors.push(`当前 ${currentWalError}`);
+  if (Number.isFinite(portfolio.wam) && Number.isFinite(portfolio.wal) && portfolio.wam > portfolio.wal + EPSILON) {
+    errors.push('当前组合 WAM 不能大于 WAL。');
+  }
   if (maxWamError) errors.push(`上限输入错误：${maxWamError}`);
   if (maxWalError) errors.push(`上限输入错误：${maxWalError}`);
 
@@ -1159,6 +1169,19 @@ export function calculateProRataRedemption(
   holdings.forEach((holding) => {
     if (holding.bankId !== null && !bankIds.has(holding.bankId)) {
       errors.push(`${holding.name || '某项持仓'}没有对应的集中度归属机构。`);
+    }
+  });
+  errors.push(...concentrationMembershipErrors(banks, new Set(banks.map(bank => bank.id))));
+  const sharedBuckets = concentrationBuckets(banks);
+  sharedBuckets.forEach(bucket => {
+    if (exceedsUpperBound(bucket.currentExposure, portfolio.aum * (bucket.limitPct / 100))) {
+      errors.push(`${bucket.name}超过${bucket.kind === 'group' ? '集团' : '同一实体'}集中度上限；同比例赎回无法修复。`);
+    }
+  });
+  const actualBanks = aggregateInstitutionExposures(banks, holdings);
+  actualBanks.forEach((bank, index) => {
+    if (Math.abs(bank.currentExposure - banks[index].currentExposure) > amountTolerance(bank.currentExposure, banks[index].currentExposure)) {
+      errors.push(`${bank.name}的集中度敞口与持仓汇总不一致。`);
     }
   });
   const exposureTotalError = institutionExposureTotalError(portfolio, banks);
@@ -1260,6 +1283,13 @@ export function calculateProRataRedemption(
     };
   });
   const postTradeErrors: string[] = [];
+  sharedBuckets.forEach(bucket => {
+    const finalExposure = bankOutcomes.filter(bank => bucket.bankIds.includes(bank.id)).reduce((sum, bank) => sum + bank.finalExposure, 0);
+    if (exceedsUpperBound(finalExposure, postAum * (bucket.limitPct / 100))) {
+      postTradeErrors.push(`${bucket.name}超过${bucket.kind === 'group' ? '集团' : '同一实体'}集中度上限。`);
+    }
+  });
+
   if (exceedsUpperBound(portfolio.wam, effectiveMaxWam)) {
     postTradeErrors.push('交易后 WAM 超过所选上限。');
   }
