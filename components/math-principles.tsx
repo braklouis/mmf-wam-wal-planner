@@ -29,7 +29,7 @@ export function MathPrinciples(props: Inputs) {
   const f = (n: number) => number(n, 8);
   const section = 'space-y-3 border-b border-border py-5';
   return <>
-    <Button variant="ghost" onClick={() => { generate(); setOpen(true); }}><Sigma />{text('数学原理', 'Mathematics')}</Button>
+    <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-foreground" onClick={() => { generate(); setOpen(true); }}><Sigma />{text('数学原理', 'Mathematics')}</Button>
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetContent className="data-[side=right]:w-full data-[side=right]:sm:max-w-3xl overflow-y-auto">
         <SheetHeader>
