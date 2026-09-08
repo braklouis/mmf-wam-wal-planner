@@ -9,3 +9,12 @@ void test('table import keeps blank banks, zero rates and percentages; ignores M
 void test('bad cells, ambiguous columns and duplicate rates fail instead of importing partially', () => {
   for (const text of ['Bank\t1M\nA\tbad', 'Bank\t1M\t1M\nA\t1\t2', 'Bank\t10M\nA\t2', 'Bank\t1W\nA\t2\nA\t3']) assert.throws(() => parseQuoteTable(text));
 });
+void test('CSV and localized bank headers support case-insensitive terms', () => {
+  assert.deepEqual(parseQuoteTable('\uFEFF银行,1m,o/n\nA,3.5％,0').quotes, [
+    { bank: 'A', term: '1M', days: 30, rate: 3.5 },
+    { bank: 'A', term: 'O/N', days: 1, rate: 0 },
+  ]);
+});
+void test('empty rates and unnamed banks cannot silently replace existing quotes', () => {
+  for (const text of ['Bank\t1M\nA\t', 'Bank\t1M\n\t3', 'Bank\t1m\t1M\nA\t2\t3']) assert.throws(() => parseQuoteTable(text));
+});

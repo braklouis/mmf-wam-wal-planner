@@ -299,6 +299,36 @@ const traditionalCharacters: Record<string, string> = {
 };
 
 const englishCopy: Record<string, string> = {
+  "资产": "Asset",
+  "持仓表内容": "Holdings table",
+  "表头": "Header",
+  "首行为表头": "First row is a header",
+  "无表头": "No header",
+  "原表金额单位": "Source amount unit",
+  "导入方式": "Import mode",
+  "追加到现有持仓": "Append to existing holdings",
+  "替换全部持仓": "Replace all holdings",
+  "请选择列": "Select a column",
+  "待导入持仓": "Holdings to import",
+  "金额合计": "Total amount",
+  "确认替换并导入": "Confirm replacement and import",
+  "确认追加并导入": "Confirm append and import",
+  "收起导入": "Hide import",
+  "粘贴持仓表": "Paste holdings table",
+  "可粘贴 Excel 单元格或 CSV 文本。支持调整列顺序和自选表头；未选择的列不导入。YTM 的 3.5 和 3.5% 均表示 3.5%。": "Paste Excel cells or CSV text. Map columns in any order; unmapped columns are ignored. Both 3.5 and 3.5% mean a YTM of 3.5%.",
+  "集中度归属机构需在导入后手动选择；不自动识别现金，缺失期限需补齐。预览和导入金额均换算为当前页面单位：": "Select concentration institutions after import. Cash is not inferred; missing terms must be completed. Preview and import amounts are converted to the current page unit:",
+  "将替换全部现有持仓，原归属机构和期限也会清除。": "All existing holdings, including their institution assignments and terms, will be replaced.",
+  "支持 Excel 粘贴或 CSV 文本；首列为 Bank、银行或机构，其余列为期限（如 CASA、O/N、1W、1M）。利率 3.5 与 3.5% 含义相同。": "Paste Excel cells or CSV text. The first column is Bank (or its Chinese equivalent), followed by terms such as CASA, O/N, 1W and 1M. Rates of 3.5 and 3.5% mean the same thing.",
+  "请为资产、金额和 YTM 各选择一列。": "Select a column for asset, amount and YTM.",
+  "资产、金额和 YTM 不能使用同一列。": "Asset, amount and YTM must use different columns.",
+  "请至少填写一项持仓。": "Enter at least one holding.",
+  "请至少填写一条有效报价，空表不会替换今日报价。": "Enter at least one valid quote. An empty table cannot replace today’s quotes.",
+  "存在缺少机构名称的报价行。": "A quote row is missing its institution name.",
+  "引号未闭合，请检查表格。": "An opening quote is not closed. Check the table.",
+  "引号后的内容无效，请检查分隔符。": "Invalid content after a closing quote. Check the separator.",
+  "金额合计超出范围。": "The total amount is out of range.",
+  "金额单位无效。": "Invalid amount unit.",
+
   '删除集团': 'Delete group',
 
   "导入失败": "Import failed",
@@ -1213,6 +1243,17 @@ function toTraditional(input: string) {
 }
 
 function toEnglish(input: string) {
+  const importError = input.match(/^第 (\d+) 行：(资产名称为空|金额格式无效|金额必须为非负有效数字|YTM 格式无效)。$/);
+  if (importError) {
+    const reasons: Record<string, string> = {
+      '资产名称为空': 'Asset name is missing',
+      '金额格式无效': 'Invalid amount format',
+      '金额必须为非负有效数字': 'Amount must be a finite, nonnegative number',
+      'YTM 格式无效': 'Invalid YTM format',
+    };
+    return `Row ${importError[1]}: ${reasons[importError[2]]}.`;
+  }
+
   const exact = englishCopy[input];
   if (exact) return exact;
   for (const { pattern, replace } of dynamicEnglishPatterns) {

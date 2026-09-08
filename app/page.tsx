@@ -1,5 +1,6 @@
 'use client';
 
+import { HoldingImport } from '@/components/holding-import';
 import { DeepReviewButton } from '@/components/deep-review-button';
 import { MathPrinciples } from '@/components/math-principles';
 import { TermStructureEntry } from '@/components/term-structure-entry';
@@ -152,6 +153,7 @@ function PlannerWorkspace({
     ...emptyPortfolio,
   });
   const [banks, setBanks] = useState<Bank[]>([]);
+  const [holdingImportOpen, setHoldingImportOpen] = useState(false);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const simpleMode = portfolioInput.inputMode === 'simple';
   const aggregateMode = portfolioInput.inputMode === 'aggregate';
@@ -876,6 +878,7 @@ function PlannerWorkspace({
     setQuoteImportBankIds(importedBanks.map(bank => bank.id));
     setQuoteView('matrix');
     setQuoteImportOpen(false);
+    setQuoteImportText('');
     setDirty(true);
     clearTargetOutcome();
   };
@@ -1594,7 +1597,8 @@ function PlannerWorkspace({
                   </div>
                 ) : null}
 
-                <div className="flex justify-end border-b border-border/60 px-5 py-3">
+                <div className="flex justify-end gap-2 border-b border-border/60 px-5 py-3">
+                    <Button type="button" variant="outline" size="sm" onClick={() => setHoldingImportOpen(open => !open)}>{t(holdingImportOpen ? '收起导入' : '粘贴持仓表')}</Button>
                     <Button
                       type="button"
                       variant="outline"
@@ -1605,6 +1609,13 @@ function PlannerWorkspace({
                       {t('新增持仓')}
                     </Button>
                 </div>
+                {holdingImportOpen && <HoldingImport amountUnit={amountUnit} existingCount={holdings.length} onImport={(rows, replace) => {
+                  const imported = rows.map(row => ({ ...row, id: id('import-holding'), bankId: UNASSIGNED_BANK_ID, wamDays: null, walDays: null }));
+                  setHoldings(old => replace ? imported : [...old, ...imported]);
+                  setHoldingImportOpen(false);
+                  setDirty(true);
+                  clearTargetOutcome();
+                }} />}
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-muted/50 hover:bg-muted/50">
@@ -2356,6 +2367,8 @@ function PlannerWorkspace({
                         <label className="grid gap-2 text-sm">{t('报价表内容')}<textarea className="min-h-40 rounded-lg border border-border bg-card p-3 font-mono text-sm" value={quoteImportText} onChange={event => setQuoteImportText(event.target.value)} /></label>
                         <p className="text-sm text-muted-foreground">{t('导入将替换今日报价，矩阵显示本次导入机构；保留当前组合参数、持仓和机构库。空白不生成报价，额度为无限制。')}</p>
                         {quoteImportPreview.data ? <p>{quoteImportPreview.data.banks.length} {t('家银行')} · {quoteImportPreview.data.quotes.length} {t('条报价')}</p> : quoteImportText && <p className="text-sm text-destructive">{quoteImportPreview.error}</p>}
+                        <p className="text-sm text-muted-foreground">{t('支持 Excel 粘贴或 CSV 文本；首列为 Bank、银行或机构，其余列为期限（如 CASA、O/N、1W、1M）。利率 3.5 与 3.5% 含义相同。')}</p>
+                        {quoteImportPreview.data && <div className="max-h-72 overflow-auto"><Table><TableHeader><TableRow><TableHead>{t('机构')}</TableHead><TableHead>{t('期限')}</TableHead><TableHead>{t('利率')} %</TableHead></TableRow></TableHeader><TableBody>{quoteImportPreview.data.quotes.map((quote, index) => <TableRow key={index}><TableCell>{quote.bank}</TableCell><TableCell>{quote.term}</TableCell><TableCell>{quote.rate}</TableCell></TableRow>)}</TableBody></Table></div>}
                         <Button disabled={!quoteImportPreview.data} onClick={importQuoteTable}>{t('导入报价')}</Button>
                       </div>}
                       <fieldset className="flex flex-wrap gap-2" aria-label={t('报价视图')}>
