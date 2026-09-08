@@ -63,3 +63,10 @@ void test('separate simple inputs and aggregate terms survive saving together', 
   const bad=JSON.parse(encodeWorkspace(saved)); bad.portfolioInput.simpleInputs.aum='200';
   assert.throws(()=>decodeWorkspace(JSON.stringify(bad)));
 });
+void test('rate scenario drafts and navigation survive saving; malformed forecasts rejected', () => {
+  const value: WorkspaceSnapshot = { ...snapshot, workspaceView: 'rates', rateScenario: { horizon: 90, waitDays: 30, basis: 365, nodes: [{ days: 30, rate: null }] } };
+  assert.deepEqual(decodeWorkspace(encodeWorkspace(value)), value);
+  for (const invalid of [{ ...value.rateScenario, basis: 0 }, { ...value.rateScenario, nodes: [null] }, { ...value.rateScenario, horizon: '90' }]) {
+    assert.throws(() => decodeWorkspace(JSON.stringify({ ...value, rateScenario: invalid })));
+  }
+});

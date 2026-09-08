@@ -1,6 +1,6 @@
 import type { ConcentrationMembership } from './concentration-groups.ts';
 export type TradeMode = 'subscription' | 'redemption';
-export type WorkspaceView = 'planner' | 'holdings' | 'quotes' | 'institutions' | 'versions';
+export type WorkspaceView = 'planner' | 'holdings' | 'quotes' | 'institutions' | 'versions' | 'rates';
 
 export type Portfolio = {
   inputMode?: 'holdings' | 'simple' | 'aggregate';

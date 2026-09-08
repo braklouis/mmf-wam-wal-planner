@@ -1,6 +1,6 @@
 /** Experimental quote-rate interpolation, not a discount/zero/forward curve.
  * Nodes must share currency, valuation date and annualisation convention.
- * Rates use percentage points: 2.5 means 2.5%. No live planner imports this module.
+ * Rates use percentage points: 2.5 means 2.5%. Used by the independent forecast scenario.
  */
 export type RateNode = { days: number; rate: number };
 export type RateEstimate =

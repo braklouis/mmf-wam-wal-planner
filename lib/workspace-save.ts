@@ -1,3 +1,4 @@
+import type { RateScenario } from './rate-strategy.ts';
 import { validGroups, type InstitutionGroup } from './group-registry.ts';
 import { validConcentrationMembership } from './concentration-groups.ts';
 import type { Portfolio, Bank, Holding, Quote, BankTemplate, AmountUnit, WorkspaceView, ModelResult, FrontierMode } from './planner.ts';
@@ -5,6 +6,7 @@ import type { Locale, Theme } from './i18n.ts';
 export const WORKSPACE_STORAGE_KEY = 'mmf-planner.workspace.v1';
 export type WorkspaceSnapshot = {
   version: 1; savedAt: string; portfolioInput: Portfolio; banks: Bank[]; holdings: Holding[]; quotes: Quote[];
+  rateScenario?: RateScenario;
   groups?: InstitutionGroup[]; bankLibrary: BankTemplate[]; amountUnit: AmountUnit; workspaceView: WorkspaceView; quoteView: 'matrix' | 'details';
   quoteImportText: string; quoteImportOpen: boolean; quoteImportBankIds: string[] | null;
   manualMetrics: Pick<Portfolio, 'aum' | 'ytm' | 'wam' | 'wal'> | null;
@@ -27,6 +29,7 @@ export function decodeWorkspace(raw: string): WorkspaceSnapshot {
   const fields = (x: Record<string, unknown>, keys: string[], type: string) => keys.every(key => typeof x[key] === type);
   const rows = (x: unknown, strings: string[], numbers: string[]) => Array.isArray(x) && x.every(row => object(row) && fields(row, strings, 'string') && fields(row, numbers, 'number')) && new Set(x.map(row => row.id)).size === x.length;
   if (!object(v) || v.version !== 1 || typeof v.savedAt !== 'string' || !Number.isFinite(Date.parse(v.savedAt)) ||
+      (v.rateScenario !== undefined && (!object(v.rateScenario) || !Array.isArray(v.rateScenario.nodes) || !v.rateScenario.nodes.every((node: Record<string, unknown>) => object(node) && ['days', 'rate'].every(key => node[key] === null || typeof node[key] === 'number' && Number.isFinite(node[key]))) || ![360, 365].includes(v.rateScenario.basis) || !['horizon', 'waitDays'].every(key => v.rateScenario[key] === null || typeof v.rateScenario[key] === 'number' && Number.isFinite(v.rateScenario[key])))) ||
       (v.groups !== undefined && !validGroups(v.groups)) ||
       !object(v.portfolioInput) || !fields(v.portfolioInput, ['aum', 'ytm', 'wam', 'wal', 'transactionAmount'], 'number') ||
       !['subscription', 'redemption'].includes(v.portfolioInput.tradeMode) ||
@@ -39,7 +42,7 @@ export function decodeWorkspace(raw: string): WorkspaceSnapshot {
       !rows(v.banks, ['id', 'name'], ['limitPct']) || !rows(v.holdings, ['id', 'name'], ['amount']) ||
       !rows(v.quotes, ['id', 'name', 'bankId'], ['rate', 'walDays']) || !v.quotes.every((q: Quote) => (q.cap === null || typeof q.cap === 'number') && (q.wamDays === null || typeof q.wamDays === 'number')) ||
       !rows(v.bankLibrary, ['id', 'name'], ['defaultLimitPct']) || !v.banks.every(validConcentrationMembership) || !v.bankLibrary.every(validConcentrationMembership) ||
-      !['元', '万元', '百万元', '亿元', 'Billion'].includes(v.amountUnit) || !['planner', 'holdings', 'quotes', 'institutions', 'versions'].includes(v.workspaceView) ||
+      !['元', '万元', '百万元', '亿元', 'Billion'].includes(v.amountUnit) || !['planner', 'holdings', 'quotes', 'institutions', 'versions', 'rates'].includes(v.workspaceView) ||
       !['matrix', 'details'].includes(v.quoteView) || !['wam', 'wal'].includes(v.frontierMode) ||
       !['zh-CN', 'zh-HK', 'en'].includes(v.locale) || !['light', 'dark'].includes(v.theme) ||
       typeof v.dirty !== 'boolean' || typeof v.quoteImportText !== 'string' || typeof v.quoteImportOpen !== 'boolean' ||

@@ -3,6 +3,8 @@
 import { HoldingImport } from '@/components/holding-import';
 import { DeepReviewButton } from '@/components/deep-review-button';
 import { MathPrinciples } from '@/components/math-principles';
+import { RateScenarioPanel } from '@/components/rate-scenario-panel';
+import { emptyRateScenario, type RateScenario } from '@/lib/rate-strategy';
 import { TermStructureEntry } from '@/components/term-structure-entry';
 import { canEditSummary, MODE_DESCRIPTIONS, cashBufferPercentage, resolvePortfolio, editSummary, switchPortfolioMode, MODE_LABELS, SUMMARY_FIELDS, type InputMode, type SummaryField } from '@/lib/portfolio-input';
 import { groupVersionsByMode, appendVersion, readVersions, renameVersion, deleteVersion, type SavedVersion } from '@/lib/workspace-versions';
@@ -153,6 +155,7 @@ function PlannerWorkspace({
     ...emptyPortfolio,
   });
   const [banks, setBanks] = useState<Bank[]>([]);
+  const [rateScenario, setRateScenario] = useState<RateScenario>(emptyRateScenario);
   const [holdingImportOpen, setHoldingImportOpen] = useState(false);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const simpleMode = portfolioInput.inputMode === 'simple';
@@ -814,7 +817,7 @@ function PlannerWorkspace({
   };
   const saveWorkspace = () => {
     try {
-      const snapshot: WorkspaceSnapshot = { version: 1, savedAt: new Date().toISOString(), portfolioInput, banks, holdings, quotes, bankLibrary, groups, amountUnit, workspaceView, quoteView, quoteImportText, quoteImportOpen, quoteImportBankIds, manualMetrics: manualMetrics.current, frontierMode, targetYtm, storedResult, dirty, locale, theme, newBankName, newBankLimitPct, editingBankId, targetYtmError, targetYtmMessage };
+      const snapshot: WorkspaceSnapshot = { version: 1, savedAt: new Date().toISOString(), portfolioInput, banks, holdings, quotes, bankLibrary, groups, amountUnit, workspaceView, rateScenario, quoteView, quoteImportText, quoteImportOpen, quoteImportBankIds, manualMetrics: manualMetrics.current, frontierMode, targetYtm, storedResult, dirty, locale, theme, newBankName, newBankLimitPct, editingBankId, targetYtmError, targetYtmMessage };
       const next = appendVersion(window.localStorage, snapshot, id('saved-version'));
       setVersions(next);
       setSavedAt(snapshot.savedAt);
@@ -834,6 +837,7 @@ function PlannerWorkspace({
       const restoredGroups = saved.groups ?? groupsFromInstitutions(saved.bankLibrary);
       setGroups(restoredGroups);
       setBankLibrary(applyGroupRegistry(saved.bankLibrary, restoredGroups)); setAmountUnit(saved.amountUnit); setWorkspaceView(saved.workspaceView);
+      setRateScenario(saved.rateScenario ?? emptyRateScenario());
       setQuoteView(saved.quoteView); setQuoteImportText(saved.quoteImportText); setQuoteImportOpen(saved.quoteImportOpen); setQuoteImportBankIds(saved.quoteImportBankIds);
       manualMetrics.current = saved.manualMetrics; setFrontierMode(saved.frontierMode); setTargetYtm(saved.targetYtm);
       setResult(calculatePlan(resolvePortfolio(saved.portfolioInput, saved.holdings), aggregateInstitutionExposures(saved.banks, saved.portfolioInput.inputMode === 'simple' ? [] : saved.holdings), saved.quotes, saved.holdings)); setDirty(false); setNewBankName(saved.newBankName); setNewBankLimitPct(saved.newBankLimitPct); setEditingBankId(saved.editingBankId);
@@ -950,6 +954,7 @@ function PlannerWorkspace({
   };
   const reset = () => {
     setQuoteImportBankIds(null);
+    setRateScenario(emptyRateScenario());
     manualMetrics.current = null;
     const empty: Portfolio = { tradeMode: 'subscription', inputMode: portfolioInput.inputMode,
       aum: 0, ytm: 0, wam: 0, wal: 0, transactionAmount: 0, maxWam: null, maxWal: null,
@@ -1112,7 +1117,7 @@ function PlannerWorkspace({
                 </div>
                 <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-300">
                   {t(
-                    workspaceView === 'versions' ? t('保存多个工作版本，按时间查看和恢复') : workspaceView === 'institutions' ? t('集中管理常用机构，供持仓与报价选择') : workspaceView === 'holdings'
+                    workspaceView === 'rates' ? t('根据预测利率比较锁定与等待策略') : workspaceView === 'versions' ? t('保存多个工作版本，按时间查看和恢复') : workspaceView === 'institutions' ? t('集中管理常用机构，供持仓与报价选择') : workspaceView === 'holdings'
                       ? t('集中维护持仓、机构归属与集中度上限')
                       : isRedemption
                         ? t('测算同比例赎回后的组合与机构敞口')
@@ -1167,12 +1172,12 @@ function PlannerWorkspace({
               <TrendingUp />
               {t('今日可投')}
             </Button>
+            <TermStructureEntry active={workspaceView === 'rates'} onClick={() => setWorkspaceView('rates')} />
             <Button variant="ghost" size="sm" aria-pressed={workspaceView === 'planner'}
               className={workspaceView === 'planner' ? 'bg-card text-foreground shadow-sm hover:bg-card' : 'text-muted-foreground hover:text-foreground'}
               onClick={() => setWorkspaceView('planner')}>
               <Calculator />{t('配置测算')}
             </Button>
-            <TermStructureEntry />
             <MathPrinciples portfolio={portfolio} banks={modelBanks} quotes={quotes} holdings={holdings} amountUnit={amountUnit} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -2251,6 +2256,7 @@ function PlannerWorkspace({
             </>
           ) : null}
 
+          {workspaceView === 'rates' && <RateScenarioPanel scenario={rateScenario} onChange={setRateScenario} portfolio={portfolio} banks={modelBanks} quotes={quotes} amountUnit={amountUnit} inputErrors={holdingErrors} />}
           {workspaceView === 'versions' && <section className={card}>
             <div className="section-head">
               <div><p className="eyebrow">{t('工作版本')}</p><h2 className="mt-1 text-lg font-semibold">{t('版本管理')}</h2></div>
