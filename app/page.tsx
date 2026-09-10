@@ -1,5 +1,6 @@
 'use client';
 
+import { QuoteImageImport } from '@/components/quote-image-import';
 import { HoldingImport } from '@/components/holding-import';
 import { DeepReviewButton } from '@/components/deep-review-button';
 import { MathPrinciples } from '@/components/math-principles';
@@ -2368,8 +2369,9 @@ function PlannerWorkspace({
                 ) : (
                   <>
                     <div className="space-y-3 border-b border-border/60 p-5">
-                      <Button variant="outline" size="sm" onClick={() => setQuoteImportOpen(open => !open)}>{t('粘贴报价表')}</Button>
+                      <Button variant="outline" size="sm" onClick={() => setQuoteImportOpen(open => !open)}>{t('导入报价表 / 图片')}</Button>
                       {quoteImportOpen && <div className="grid gap-3 rounded-md border border-border p-4">
+                        <QuoteImageImport onText={setQuoteImportText} t={t} />
                         <label className="grid gap-2 text-sm">{t('报价表内容')}<textarea className="min-h-40 rounded-lg border border-border bg-card p-3 font-mono text-sm" value={quoteImportText} onChange={event => setQuoteImportText(event.target.value)} /></label>
                         <p className="text-sm text-muted-foreground">{t('导入将替换今日报价，矩阵显示本次导入机构；保留当前组合参数、持仓和机构库。空白不生成报价，额度为无限制。')}</p>
                         {quoteImportPreview.data ? <p>{quoteImportPreview.data.banks.length} {t('家银行')} · {quoteImportPreview.data.quotes.length} {t('条报价')}</p> : quoteImportText && <p className="text-sm text-destructive">{quoteImportPreview.error}</p>}
