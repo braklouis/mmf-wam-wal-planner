@@ -35,16 +35,27 @@ function isRateWord(text: string) {
   return /\d/.test(text) || /[%％]/.test(text);
 }
 
+function isValidHeader(words: OCRWord[]) {
+  const headerIndex = words.findIndex(word => BANK_HEADERS.has(clean(word.text).toUpperCase()));
+  if (headerIndex !== 0) return false;
+  const headers = words.slice(headerIndex).map(word => clean(word.text));
+  const normalized = headers.map(text => text.toUpperCase());
+  return headers.length >= 2
+    && normalized.slice(1).every(term => TERMS.has(term))
+    && new Set(normalized).size === normalized.length;
+}
+
 /** Converts OCR words into the tab-separated format consumed by parseQuoteTable. */
 export function ocrWordsToQuoteTable(words: OCRWord[]) {
   if (!words.length) throw new Error('OCR 报价结果为空，无法识别报价表头。');
   const rows = rowsFromWords(words.filter(word => clean(word.text)));
-  const headerRow = rows.find(row => row.words.some(word => BANK_HEADERS.has(clean(word.text).toUpperCase())));
+  // A title can contain the word "Bank" without being the table header. Require
+  // a complete, supported header before selecting a row as the header.
+  const headerRow = rows.find(row => isValidHeader(row.words));
   if (!headerRow) throw new Error('无法识别报价表头：首列必须为 Bank、银行、銀行、机构或機構。');
 
   const headerWords = headerRow.words;
-  const headerIndex = headerWords.findIndex(word => BANK_HEADERS.has(clean(word.text).toUpperCase()));
-  if (headerIndex !== 0) throw new Error('无法识别报价表头：银行表头必须位于首列。');
+  const headerIndex = 0;
   const headers = headerWords.slice(headerIndex).map(word => clean(word.text));
   const normalized = headers.map(text => text.toUpperCase());
   if (headers.length < 2 || normalized.slice(1).some(term => !TERMS.has(term)) || new Set(normalized).size !== normalized.length) {
@@ -61,7 +72,9 @@ export function ocrWordsToQuoteTable(words: OCRWord[]) {
   for (const row of rows) {
     if (row.centerY <= headerRow.centerY) continue;
     const sorted = row.words;
-    const firstRate = sorted.find(word => isRateWord(clean(word.text)));
+    // Only a numeric token to the right of the bank column can be a quote.
+    // This keeps numeric institution names such as PING2 in the bank cell.
+    const firstRate = sorted.find(word => columnFor(center(word).x) > 0 && isRateWord(clean(word.text)));
     const bankWords = firstRate
       ? sorted.filter(word => center(word).x < center(firstRate).x)
       : sorted.filter(word => columnFor(center(word).x) === 0);
