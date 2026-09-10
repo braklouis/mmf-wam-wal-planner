@@ -172,7 +172,12 @@ function PlannerWorkspace({
   const [quoteImportText, setQuoteImportText] = useState('');
   const [quoteImportOpen, setQuoteImportOpen] = useState(false);
   const [quoteImportBankIds, setQuoteImportBankIds] = useState<string[] | null>(null);
+  const [quoteOcrWarnings, setQuoteOcrWarnings] = useState<string[]>([]);
+  const quoteOcrWarningsDetailsRef = useRef<HTMLDetailsElement>(null);
   const quoteImportPreview = useMemo(() => { try { return { data: parseQuoteTable(quoteImportText), error: '' }; } catch (error) { return { data: null, error: error instanceof Error ? error.message : '导入失败' }; } }, [quoteImportText]);
+  useEffect(() => {
+    if (quoteOcrWarnings.length > 0) quoteOcrWarningsDetailsRef.current?.setAttribute('open', '');
+  }, [quoteOcrWarnings]);
   const [quoteView, setQuoteView] = useState<'matrix' | 'details'>('matrix');
   const matrixColumns = useMemo(() => quoteColumns(quotes), [quotes]);
   const [bankLibrary, setBankLibrary] = useState<BankTemplate[]>([]);
@@ -835,6 +840,7 @@ function PlannerWorkspace({
       const saved = decodeWorkspace(entry.data);
       setVersions(latest);
       setPortfolio(saved.portfolioInput); setBanks(saved.banks); setHoldings(saved.holdings); setQuotes(saved.quotes);
+      setQuoteOcrWarnings([]);
       const restoredGroups = saved.groups ?? groupsFromInstitutions(saved.bankLibrary);
       setGroups(restoredGroups);
       setBankLibrary(applyGroupRegistry(saved.bankLibrary, restoredGroups)); setAmountUnit(saved.amountUnit); setWorkspaceView(saved.workspaceView);
@@ -882,6 +888,7 @@ function PlannerWorkspace({
     setQuotes(data.quotes.map(quote => ({ id: id('import-quote'), bankId: byName.get(quote.bank)!, name: `${quote.bank} ${quote.term}`, wamDays: null, walDays: quote.days, rate: quote.rate, cap: null })));
     setQuoteImportBankIds(importedBanks.map(bank => bank.id));
     setQuoteView('matrix');
+    quoteOcrWarningsDetailsRef.current?.setAttribute('open', '');
     setQuoteImportOpen(false);
     setQuoteImportText('');
     setDirty(true);
@@ -955,6 +962,7 @@ function PlannerWorkspace({
   };
   const reset = () => {
     setQuoteImportBankIds(null);
+    setQuoteOcrWarnings([]);
     setRateScenario(emptyRateScenario());
     manualMetrics.current = null;
     const empty: Portfolio = { tradeMode: 'subscription', inputMode: portfolioInput.inputMode,
@@ -2371,7 +2379,7 @@ function PlannerWorkspace({
                     <div className="space-y-3 border-b border-border/60 p-5">
                       <Button variant="outline" size="sm" onClick={() => setQuoteImportOpen(open => !open)}>{t('导入报价表 / 图片')}</Button>
                       {quoteImportOpen && <div className="grid gap-3 rounded-md border border-border p-4">
-                        <QuoteImageImport onText={setQuoteImportText} t={t} />
+                        <QuoteImageImport onText={setQuoteImportText} onWarnings={setQuoteOcrWarnings} t={t} />
                         <label className="grid gap-2 text-sm">{t('报价表内容')}<textarea className="min-h-40 rounded-lg border border-border bg-card p-3 font-mono text-sm" value={quoteImportText} onChange={event => setQuoteImportText(event.target.value)} /></label>
                         <p className="text-sm text-muted-foreground">{t('导入将替换今日报价，矩阵显示本次导入机构；保留当前组合参数、持仓和机构库。空白不生成报价，额度为无限制。')}</p>
                         {quoteImportPreview.data ? <p>{quoteImportPreview.data.banks.length} {t('家银行')} · {quoteImportPreview.data.quotes.length} {t('条报价')}</p> : quoteImportText && <p className="text-sm text-destructive">{quoteImportPreview.error}</p>}
@@ -2379,6 +2387,12 @@ function PlannerWorkspace({
                         {quoteImportPreview.data && <div className="max-h-72 overflow-auto"><Table><TableHeader><TableRow><TableHead>{t('机构')}</TableHead><TableHead>{t('期限')}</TableHead><TableHead>{t('利率')} %</TableHead></TableRow></TableHeader><TableBody>{quoteImportPreview.data.quotes.map((quote, index) => <TableRow key={index}><TableCell>{quote.bank}</TableCell><TableCell>{quote.term}</TableCell><TableCell>{quote.rate}</TableCell></TableRow>)}</TableBody></Table></div>}
                         <Button disabled={!quoteImportPreview.data} onClick={importQuoteTable}>{t('导入报价')}</Button>
                       </div>}
+                      {quoteOcrWarnings.length > 0 && <details ref={quoteOcrWarningsDetailsRef} className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+                        <summary className="cursor-pointer font-medium text-amber-900 dark:text-amber-200">{t('OCR 识别提醒（请核对）')}</summary>
+                        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-900/90 dark:text-amber-100/90">
+                          {quoteOcrWarnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}
+                        </ul>
+                      </details>}
                       <fieldset className="flex flex-wrap gap-2" aria-label={t('报价视图')}>
                         <Button size="sm" variant={quoteView === 'matrix' ? 'default' : 'outline'} aria-pressed={quoteView === 'matrix'} onClick={() => setQuoteView('matrix')}>{t('银行 × 期限')}</Button>
                         <Button size="sm" variant={quoteView === 'details' ? 'default' : 'outline'} aria-pressed={quoteView === 'details'} onClick={() => setQuoteView('details')}>{t('明细与额度')}</Button>
